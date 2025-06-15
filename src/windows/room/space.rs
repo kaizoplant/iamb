@@ -33,6 +33,7 @@ use crate::base::{
     ProgramContext,
     ProgramStore,
     RoomFocus,
+    RoomView,
     SpaceAction,
 };
 
@@ -51,7 +52,7 @@ pub struct SpaceState {
 impl SpaceState {
     pub fn new(room: MatrixRoom) -> Self {
         let room_id = room.room_id().to_owned();
-        let content = IambBufferId::Room(room_id.clone(), None, RoomFocus::Scrollback);
+        let content = IambBufferId::Room(room_id.clone(), RoomView::Main, RoomFocus::Scrollback);
         let list = ListState::new(content, vec![]);
         let last_fetch = None;
 

@@ -110,7 +110,7 @@ impl ChatState {
     pub fn new(room: MatrixRoom, thread: Option<OwnedEventId>, store: &mut ProgramStore) -> Self {
         let room_id = room.room_id().to_owned();
         let scrollback = ScrollbackState::new(room_id.clone(), thread.clone());
-        let id = IambBufferId::Room(room_id.clone(), thread, RoomFocus::MessageBar);
+        let id = IambBufferId::Room(room_id.clone(), thread.into(), RoomFocus::MessageBar);
         let ebuf = store.load_buffer(id);
         let tbox = TextBoxState::new(ebuf);
 
@@ -748,8 +748,8 @@ impl WindowOps<IambInfo> for ChatState {
         // XXX: I want each WindowSlot to have its own shared buffer, instead of each Room; need to
         // find a good way to pass that info here so that it can be part of the content id.
         let room_id = self.room_id.clone();
-        let thread = self.thread().cloned();
-        let id = IambBufferId::Room(room_id.clone(), thread, RoomFocus::MessageBar);
+        let view = self.thread().cloned().into();
+        let id = IambBufferId::Room(room_id.clone(), view, RoomFocus::MessageBar);
         let ebuf = store.load_buffer(id);
         let tbox = TextBoxState::new(ebuf);
 
@@ -818,9 +818,9 @@ impl Editable<ProgramContext, ProgramStore, IambInfo> for ChatState {
         // And now we can finally run the editor command.
         match delegate!(self, w => w.editor_command(act, ctx, store)) {
             res @ Ok(_) => res,
-            Err(EditError::WrongBuffer(IambBufferId::Room(room_id, thread, focus)))
+            Err(EditError::WrongBuffer(IambBufferId::Room(room_id, view, focus)))
                 if room_id == self.room_id &&
-                    thread.as_ref() == self.thread() &&
+                    view == self.thread().into() &&
                     act.is_switchable(ctx) =>
             {
                 // Switch focus.

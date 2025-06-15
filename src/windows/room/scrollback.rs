@@ -51,7 +51,7 @@ use crate::{
         ProgramStore,
         RoomFetchStatus,
         RoomFocus,
-        RoomInfo,
+        RoomInfo, RoomView,
     },
     config::TunableValues,
     message::{ImageStatus, Message, MessageCursor, MessageEvent, MessageKey, Messages},
@@ -143,7 +143,7 @@ pub struct ScrollbackState {
 
 impl ScrollbackState {
     pub fn new(room_id: OwnedRoomId, thread: Option<OwnedEventId>) -> ScrollbackState {
-        let id = IambBufferId::Room(room_id.to_owned(), thread.clone(), RoomFocus::Scrollback);
+        let id = IambBufferId::Room(room_id.to_owned(), thread.clone().into(), RoomFocus::Scrollback);
         let cursor = MessageCursor::default();
         let viewctx = ViewportContext::default();
         let jumped = HistoryList::default();
@@ -1046,7 +1046,7 @@ impl Promptable<ProgramContext, ProgramStore, IambInfo> for ScrollbackState {
                 } else {
                     let root = key.1.clone();
                     let room_id = self.room_id.clone();
-                    let id = IambId::Room(room_id, Some(root));
+                    let id = IambId::Room(room_id, RoomView::Thread(root));
                     let open = WindowAction::Switch(OpenTarget::Application(id));
                     Ok(vec![(open.into(), ctx.clone())])
                 }

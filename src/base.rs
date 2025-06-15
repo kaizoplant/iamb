@@ -1728,11 +1728,39 @@ impl ChatStore {
 
 impl ApplicationStore for ChatStore {}
 
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub enum RoomView {
+    /// The main timeline is shown.
+    Main,
+    /// A thread is shown.
+    Thread(OwnedEventId),
+    /// A single message is shown.
+    Message(OwnedEventId),
+}
+
+impl From<Option<OwnedEventId>> for RoomView {
+    fn from(thread: Option<OwnedEventId>) -> Self {
+        match thread {
+            Some(thread) => Self::Thread(thread),
+            None => Self::Main,
+        }
+    }
+}
+
+impl From<Option<&OwnedEventId>> for RoomView {
+    fn from(thread: Option<&OwnedEventId>) -> Self {
+        match thread {
+            Some(thread) => Self::Thread(thread.to_owned()),
+            None => Self::Main,
+        }
+    }
+}
+
 /// Identified used to track window content.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum IambId {
-    /// A Matrix room, with an optional thread to show.
-    Room(OwnedRoomId, Option<OwnedEventId>),
+    /// A Matrix room, with an item that is shown.
+    Room(OwnedRoomId, RoomView),
 
     /// The `:dms` window.
     DirectList,
@@ -1765,11 +1793,14 @@ pub enum IambId {
 impl Display for IambId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            IambId::Room(room_id, None) => {
+            IambId::Room(room_id, RoomView::Main) => {
                 write!(f, "iamb://room/{room_id}")
             },
-            IambId::Room(room_id, Some(thread)) => {
+            IambId::Room(room_id, RoomView::Thread(thread)) => {
                 write!(f, "iamb://room/{room_id}/threads/{thread}")
+            },
+            IambId::Room(room_id, RoomView::Message(message)) => {
+                write!(f, "iamb://room/{room_id}/messages/{message}")
             },
             IambId::MemberList(room_id) => {
                 write!(f, "iamb://members/{room_id}")
@@ -1840,7 +1871,7 @@ impl Visitor<'_> for IambIdVisitor {
                             return Err(E::custom("Invalid room identifier"));
                         };
 
-                        Ok(IambId::Room(room_id, None))
+                        Ok(IambId::Room(room_id, RoomView::Main))
                     },
                     [room_id, "threads", thread_root] => {
                         let Ok(room_id) = OwnedRoomId::try_from(room_id) else {
@@ -1851,7 +1882,18 @@ impl Visitor<'_> for IambIdVisitor {
                             return Err(E::custom("Invalid thread root identifier"));
                         };
 
-                        Ok(IambId::Room(room_id, Some(thread_root)))
+                        Ok(IambId::Room(room_id, RoomView::Thread(thread_root)))
+                    },
+                    [room_id, "messages", message] => {
+                        let Ok(room_id) = OwnedRoomId::try_from(room_id) else {
+                            return Err(E::custom("Invalid room identifier"));
+                        };
+
+                        let Ok(message) = OwnedEventId::try_from(message) else {
+                            return Err(E::custom("Invalid message identifier"));
+                        };
+
+                        Ok(IambId::Room(room_id, RoomView::Message(message)))
                     },
                     _ => return Err(E::custom("Invalid members window URL")),
                 }
@@ -1965,7 +2007,7 @@ pub enum IambBufferId {
     Command(CommandType),
 
     /// The message buffer or a specific message in a room.
-    Room(OwnedRoomId, Option<OwnedEventId>, RoomFocus),
+    Room(OwnedRoomId, RoomView, RoomFocus),
 
     /// The `:dms` window.
     DirectList,
@@ -2000,7 +2042,7 @@ impl IambBufferId {
     pub fn to_window(&self) -> Option<IambId> {
         let id = match self {
             IambBufferId::Command(_) => return None,
-            IambBufferId::Room(room, thread, _) => IambId::Room(room.clone(), thread.clone()),
+            IambBufferId::Room(room, view, _) => IambId::Room(room.clone(), view.clone()),
             IambBufferId::DirectList => IambId::DirectList,
             IambBufferId::MemberList(room) => IambId::MemberList(room.clone()),
             IambBufferId::RoomList => IambId::RoomList,
