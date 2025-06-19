@@ -1270,6 +1270,9 @@ impl RoomInfo {
         user_id: OwnedUserId,
         event_id: OwnedEventId,
     ) {
+        if self.name.as_deref() == Some(LOGGED_ROOM_NAME) {
+            tracing::error!("setting receipt: {event_id} in {thread:?} for {user_id}",)
+        }
         self.clear_receipt(&thread, &user_id);
         self.event_receipts
             .entry(thread.clone())
