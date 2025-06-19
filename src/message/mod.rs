@@ -435,7 +435,7 @@ fn redaction_unsigned(ev: SyncRoomRedactionEvent) -> RedactedUnsigned {
     RedactedUnsigned::new(serde_json::from_value(redacted_because).unwrap())
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum MessageEvent {
     EncryptedOriginal(Box<OriginalRoomEncryptedEvent>),
     EncryptedRedacted(Box<RedactedRoomEncryptedEvent>),

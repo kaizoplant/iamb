@@ -93,6 +93,7 @@ use modalkit::{
 use crate::config::ImagePreviewProtocolValues;
 use crate::message::ImageStatus;
 use crate::preview::{source_from_event, spawn_insert_preview};
+use crate::LOGGED_ROOM_NAME;
 use crate::{
     message::{Message, MessageEvent, MessageKey, MessageTimeStamp, Messages},
     worker::Requester,
@@ -1136,6 +1137,13 @@ impl RoomInfo {
             .user_receipts
             .get(&ReceiptThread::Main)
             .and_then(|receipts| receipts.get(&settings.profile.user_id));
+
+        if self.name.as_deref() == Some(LOGGED_ROOM_NAME) {
+            tracing::error!(
+                "unreads: last msg: {:#?}, last rcpt: {last_receipt:#?}",
+                last_message.as_ref().map(|msg| &msg.1.event)
+            )
+        }
 
         match (last_message, last_receipt) {
             (Some(((ts, recent), _)), Some(last_read)) => {

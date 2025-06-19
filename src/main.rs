@@ -29,12 +29,15 @@ use std::time::{Duration, Instant};
 use clap::Parser;
 use matrix_sdk::crypto::encrypt_room_key_export;
 use matrix_sdk::ruma::api::client::error::ErrorKind;
-use matrix_sdk::ruma::OwnedUserId;
+use matrix_sdk::ruma::{room_id, OwnedRoomId, OwnedUserId};
 use modalkit::keybindings::InputBindings;
 use rand::{distributions::Alphanumeric, Rng};
 use temp_dir::TempDir;
 use tokio::sync::Mutex as AsyncMutex;
 use tracing_subscriber::FmtSubscriber;
+
+pub const LOGGED_ROOM: OwnedRoomId = room_id!("");
+pub const LOGGED_ROOM_NAME: &str = "";
 
 use modalkit::crossterm::{
     self,
@@ -1084,7 +1087,7 @@ fn main() -> IambResult<()> {
 
     let subscriber = FmtSubscriber::builder()
         .with_writer(appender)
-        .with_max_level(settings.tunables.log_level)
+        .with_max_level(tracing::Level::ERROR)
         .finish();
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
 

@@ -90,6 +90,7 @@ use modalkit::prelude::{EditInfo, InfoMessage};
 
 use crate::base::Need;
 use crate::notifications::register_notifications;
+use crate::LOGGED_ROOM;
 use crate::{
     base::{
         AsyncProgramStore,
@@ -336,6 +337,12 @@ fn load_insert(
             for (msg, receipts) in msgs.into_iter() {
                 let sender = msg.sender().to_owned();
                 let _ = presences.get_or_default(sender);
+
+
+                    if room_id == LOGGED_ROOM {
+                        tracing::error!("message load: {msg:#?} with receipts: {receipts:#?}");
+                    }
+
 
                 for user_id in receipts {
                     info.set_receipt(ReceiptThread::Main, user_id, msg.event_id().to_owned());
@@ -979,6 +986,10 @@ impl ClientWorker {
                 async move {
                     let room_id = room.room_id();
 
+                    if room_id == LOGGED_ROOM {
+                        tracing::error!("message event: {ev:#?}");
+                    }
+
                     if let Some(msg) = ev.as_original() {
                         if let MessageType::VerificationRequest(_) = msg.content.msgtype {
                             if let Some(request) = client
@@ -1021,6 +1032,10 @@ impl ClientWorker {
                 async move {
                     let room_id = room.room_id();
 
+                    if room_id == LOGGED_ROOM {
+                        tracing::error!("reaction event: {ev:#?}");
+                    }
+
                     let mut locked = store.lock().await;
 
                     let sender = ev.sender().to_owned();
@@ -1039,6 +1054,10 @@ impl ClientWorker {
              store: Ctx<AsyncProgramStore>| {
                 async move {
                     let room_id = room.room_id();
+
+                    if room_id == LOGGED_ROOM {
+                        tracing::error!("recipt event: {ev:#?}");
+                    }
 
                     let mut locked = store.lock().await;
 
@@ -1064,6 +1083,10 @@ impl ClientWorker {
                 |ev: AnySyncStateEvent, room: MatrixRoom, store: Ctx<AsyncProgramStore>| {
                     async move {
                         let room_id = room.room_id();
+                        if room_id == LOGGED_ROOM {
+                            tracing::error!("state event: {ev:#?}");
+                        }
+
                         let mut locked = store.lock().await;
 
                         let info = locked.application.get_room_info(room_id.to_owned());
@@ -1079,6 +1102,10 @@ impl ClientWorker {
              store: Ctx<AsyncProgramStore>| {
                 async move {
                     let room_id = room.room_id();
+                    if room_id == LOGGED_ROOM {
+                        tracing::error!("redaction event: {ev:#?}");
+                    }
+
                     let room_info = room.clone_info();
                     let room_version = room_info.room_version().unwrap_or(&RoomVersionId::V1);
 
@@ -1096,6 +1123,10 @@ impl ClientWorker {
              store: Ctx<AsyncProgramStore>| {
                 async move {
                     let room_id = room.room_id();
+                    if room_id == LOGGED_ROOM {
+                        tracing::error!("member event: {ev:#?}");
+                    }
+
                     let user_id = ev.state_key;
 
                     let ambiguous_name = DisplayName::new(
