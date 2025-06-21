@@ -146,7 +146,7 @@ const READ_GUTTER: usize = 5;
 const MIN_MSG_LEN: usize = 30;
 
 const TIME_GUTTER_EMPTY: &str = "            ";
-const TIME_GUTTER_EMPTY_SPAN: Span<'static> = span_static(TIME_GUTTER_EMPTY);
+pub const TIME_GUTTER_EMPTY_SPAN: Span<'static> = span_static(TIME_GUTTER_EMPTY);
 
 const USIZE_TOO_SMALL: bool = usize::BITS < u64::BITS;
 
@@ -198,7 +198,7 @@ fn placeholder_frame(
 }
 
 #[inline]
-fn millis_to_datetime(ms: UInt) -> DateTime<LocalTz> {
+pub fn millis_to_datetime(ms: UInt) -> DateTime<LocalTz> {
     let time = i64::from(ms) / 1000;
     let time = DateTime::from_timestamp(time, 0).unwrap_or_default();
     time.into()

@@ -31,8 +31,14 @@ use modalkit::{
     prelude::*,
 };
 use modalkit_ratatui::{TerminalCursor, WindowOps};
-use ratatui::prelude::Widget;
-use ratatui::{buffer::Buffer, layout::Rect, widgets::StatefulWidget};
+use ratatui::{
+    buffer::Buffer,
+    layout::Rect,
+    style::{Modifier, Style},
+    text::Line,
+    widgets::StatefulWidget,
+};
+use ratatui::{prelude::Widget, text::Span};
 use ratatui_image::Image;
 
 use crate::{
@@ -45,10 +51,57 @@ use crate::{
         ProgramContext,
         ProgramStore,
         RoomFocus,
+        RoomInfo,
         RoomView,
         SendAction,
-    }, config::Tunables, message::Message
+    },
+    config::{TunableValues, Tunables, UserDisplayStyle},
+    message::{millis_to_datetime, Message, MessageTimeStamp, TIME_GUTTER_EMPTY_SPAN},
+    util::space,
 };
+
+fn user_date_line(
+    msg: &Message,
+    width: usize,
+    info: &RoomInfo,
+    tunables: &TunableValues,
+) -> Line<'static> {
+    let user_id = msg.sender.as_ref();
+    let Span { content: user, style: user_style } = tunables.get_user_span(user_id, info);
+    let mut user = user.to_string();
+    if let UserDisplayStyle::Username = tunables.username_display {
+    } else {
+        user.push_str(&format!(" ({})", user_id.as_str()));
+    }
+    user.push(' ');
+
+    let mut date = if let MessageTimeStamp::OriginServer(ms) = msg.timestamp {
+        millis_to_datetime(ms).format("%T %A, %B %d %Y").to_string()
+    } else {
+        String::new()
+    };
+
+    // truncate if needed
+    if user.len() > width {
+        date.clear();
+        std::mem::drop(user.drain(width.saturating_sub(2)..));
+        if width >= 2 {
+            user.push_str("..");
+        }
+    } else if user.len() + date.len() >= width {
+        let date_width = width - user.len();
+        std::mem::drop(date.drain(..=date.len().saturating_sub(date_width) + 2));
+        if date_width >= 2 {
+            date.insert_str(0, "..");
+        }
+    }
+
+    let padding = width - user.len() - date.len();
+
+    Span::styled(user, user_style) +
+        Span::raw(space(padding)) +
+        Span::styled(date, Style::new().add_modifier(Modifier::BOLD))
+}
 
 /// State needed for rendering [MessageWidget].
 pub struct MessageState {
@@ -474,20 +527,26 @@ impl StatefulWidget for MessageWidget<'_> {
         let height = area.height as usize;
         let width = area.width as usize;
 
-        let Some(item) = info.get_event(&state.message_id) else {
+        let Some(msg) = info.get_event(&state.message_id) else {
             todo!()
         };
 
         let mut message_tunables = settings.tunables.clone();
         message_tunables.user_gutter_width = 2;
         message_tunables.read_receipt_display = false;
+        message_tunables.message_time_display = false;
+        message_tunables.message_user_color = false;
 
         // ---
 
         let mut lines = vec![];
 
+        // push header
+        lines.push((user_date_line(msg, width, info, &settings.tunables), None));
+
+        // push message
         let (txt, [mut msg_preview, mut reply_preview]) =
-            item.show_with_preview(Some(item), false, width, info, &message_tunables);
+            msg.show_with_preview(Some(msg), false, width, info, &message_tunables);
 
         for (row, line) in txt.lines.into_iter().enumerate() {
             // Only take the preview into the matching row number.
