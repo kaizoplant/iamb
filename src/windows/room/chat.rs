@@ -687,6 +687,11 @@ impl ChatState {
         &self.room_id
     }
 
+    pub fn current_message(&self, store: &mut ProgramStore) -> Option<OwnedEventId> {
+        let info = store.application.rooms.get_or_default(self.room_id.clone());
+        self.scrollback.get_key(info).map(|(_, id)| id)
+    }
+
     pub fn auto_toggle_focus(
         &mut self,
         act: &EditorAction,

@@ -370,6 +370,21 @@ impl RoomState {
 
                 Ok(vec![(act, cmd.context.clone())])
             },
+            RoomAction::Message(cmd) => {
+                let id = match self {
+                    RoomState::Chat(chat) => chat.current_message(store),
+                    RoomState::Space(_) => None,
+                    RoomState::Message(message) => Some(message.id().to_owned()),
+                };
+                let Some(id) = id else {
+                    return Err(UIError::Failure("No message selected".into()));
+                };
+                let act = Action::Window(WindowAction::Switch(OpenTarget::Application(
+                    IambId::Room(self.id().to_owned(), RoomView::Message(id)),
+                )));
+
+                Ok(vec![(act, cmd.context.clone())])
+            },
             RoomAction::SetDirect(is_direct) => {
                 let room = store
                     .application
