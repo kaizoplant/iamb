@@ -568,25 +568,28 @@ impl StatefulWidget for MessageWidget<'_> {
         // push reactions
         if settings.tunables.reaction_display {
             for (key, users) in info.get_reactions(&state.message_id) {
-                let name = if settings.tunables.reaction_shortcode_display {
-                    if let Some(emoji) = emojis::get(key) {
-                        if let Some(short) = emoji.shortcode() {
-                            short
-                        } else {
-                            // No ASCII shortcode name to show.
-                            continue;
-                        }
-                    } else if key.chars().all(|c| c.is_ascii_alphanumeric()) {
-                        key
+                let short = emojis::get(key).and_then(|emoji| emoji.shortcode()).or(
+                    if key.chars().all(|c| c.is_ascii_alphanumeric()) {
+                        Some(key)
                     } else {
-                        // Not an Emoji or a printable ASCII string.
+                        None
+                    },
+                );
+
+                let content = if settings.tunables.reaction_shortcode_display {
+                    if let Some(short) = short {
+                        format!("[{short} {}]", users.len())
+                    } else {
                         continue;
                     }
+                } else if let Some(short) = short {
+                    format!("[{key} {}] ({short})", users.len())
                 } else {
-                    key
+                    format!("[{key} {}]", users.len())
                 };
+
                 lines.push((Line::raw(""), None));
-                lines.push((Line::raw(format!("[{name} {}]", users.len())), None));
+                lines.push((Line::raw(content), None));
 
                 for id in users {
                     let user = settings.tunables.get_user_span(id, info);
