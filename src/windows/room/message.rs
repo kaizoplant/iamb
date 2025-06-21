@@ -30,7 +30,7 @@ use modalkit::{
     errors::{EditError, EditResult, UIError, UIResult},
     prelude::*,
 };
-use modalkit_ratatui::{TerminalCursor, WindowOps};
+use modalkit_ratatui::{ScrollActions, TerminalCursor, WindowOps};
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
@@ -110,8 +110,13 @@ pub struct MessageState {
 
     message_id: OwnedEventId,
 
-    scroll_offset: usize,
-    /// The jumplist of `scroll_offset`s
+    /// The number of lines drawn with the last rendering.
+    lines: usize,
+
+    /// Contextual info about the viewport used during rendering.
+    viewctx: ViewportContext<usize>,
+
+    /// The jumplist of scroll offsets
     jumped: HistoryList<usize>,
 }
 
@@ -120,13 +125,15 @@ impl MessageState {
         let room_id = room.room_id().to_owned();
 
         let jumped = HistoryList::default();
+        let viewctx = ViewportContext::default();
 
         Self {
             room_id,
             room,
             message_id,
+            viewctx,
             jumped,
-            scroll_offset: 0,
+            lines: 0,
         }
     }
 
@@ -143,6 +150,11 @@ impl MessageState {
         store: &mut ProgramStore,
     ) -> IambResult<EditInfo> {
         todo!()
+    }
+
+    /// Set the dimensions and placement within the terminal window for this list.
+    pub fn set_term_info(&mut self, area: Rect) {
+        self.viewctx.dimensions = (area.width as usize, area.height as usize);
     }
 
     pub fn room(&self) -> &MatrixRoom {
@@ -166,11 +178,43 @@ impl MessageState {
     }
 
     fn jump_changed(&mut self) -> bool {
-        self.jumped.current() != &self.scroll_offset
+        self.jumped.current() != &self.viewctx.corner
     }
 
     fn push_jump(&mut self) {
-        self.jumped.push(self.scroll_offset);
+        self.jumped.push(self.viewctx.corner);
+    }
+
+    fn movement(
+        &self,
+        pos: usize,
+        movement: &MoveType,
+        count: &Count,
+        ctx: &ProgramContext,
+        info: &RoomInfo,
+    ) -> Option<usize> {
+        let count = ctx.resolve(count);
+
+        match movement {
+            MoveType::BufferPos(MovePosition::Beginning) => Some(0),
+            MoveType::BufferPos(MovePosition::End) => {
+                Some(self.lines.saturating_sub(self.viewctx.get_height()))
+            },
+            MoveType::FinalNonBlank(dir) |
+            MoveType::FirstWord(dir) |
+            MoveType::Line(dir) |
+            MoveType::ScreenLine(dir) |
+            MoveType::ParagraphBegin(dir) |
+            MoveType::SectionBegin(dir) |
+            MoveType::SectionEnd(dir) => {
+                match dir {
+                    MoveDir1D::Previous => Some(pos.saturating_sub(count)),
+                    MoveDir1D::Next => Some(pos + count),
+                }
+            },
+
+            _ => todo!(),
+        }
     }
 }
 
@@ -184,8 +228,9 @@ impl WindowOps<IambInfo> for MessageState {
             room_id: self.room_id.clone(),
             room: self.room.clone(),
             message_id: self.message_id.clone(),
-            scroll_offset: self.scroll_offset,
+            viewctx: self.viewctx.clone(),
             jumped: self.jumped.clone(),
+            lines: self.lines,
         }
     }
 
@@ -248,7 +293,9 @@ impl EditorActions<ProgramContext, ProgramStore, IambInfo> for MessageState {
 
                         Some(cursor.get_y())
                     },
-                    EditTarget::Motion(mt, count) => todo!(),
+                    EditTarget::Motion(mt, count) => {
+                        self.movement(self.viewctx.corner, mt, count, ctx, info)
+                    },
                     EditTarget::Range(_, _, _) => {
                         return Err(EditError::Failure("Cannot use ranges in a list".to_string()));
                     },
@@ -277,7 +324,7 @@ impl EditorActions<ProgramContext, ProgramStore, IambInfo> for MessageState {
                 };
 
                 if let Some(pos) = pos {
-                    self.scroll_offset = pos;
+                    self.viewctx.corner = pos;
                 }
 
                 return Ok(None);
@@ -303,7 +350,7 @@ impl EditorActions<ProgramContext, ProgramStore, IambInfo> for MessageState {
         _: &ProgramContext,
         store: &mut ProgramStore,
     ) -> EditResult<EditInfo, IambInfo> {
-        let cursor = Cursor::new(self.scroll_offset, 0);
+        let cursor = Cursor::new(self.viewctx.corner, 0);
         store.cursors.set_mark(self.iamb_buffer_id(), name, cursor);
 
         Ok(None)
@@ -375,7 +422,7 @@ impl EditorActions<ProgramContext, ProgramStore, IambInfo> for MessageState {
                     self.push_jump();
                 }
 
-                self.scroll_offset = ngroup.leader.cursor().get_y();
+                self.viewctx.corner = ngroup.leader.cursor().get_y();
 
                 Ok(None)
             },
@@ -383,7 +430,7 @@ impl EditorActions<ProgramContext, ProgramStore, IambInfo> for MessageState {
                 let reg = ctx.get_register().unwrap_or(Register::UnnamedCursorGroup);
 
                 // Lists don't have groups; override any previously saved group.
-                let cursor = Cursor::new(self.scroll_offset, 0);
+                let cursor = Cursor::new(self.viewctx.corner, 0);
 
                 let group = CursorGroup {
                     leader: CursorState::Location(cursor),
@@ -463,7 +510,7 @@ impl Jumpable<ProgramContext, IambInfo> for MessageState {
                 };
 
                 if len > 0 {
-                    self.scroll_offset = *pos;
+                    self.viewctx.corner = *pos;
                 }
 
                 Ok(count.saturating_sub(len))
@@ -483,6 +530,80 @@ impl Promptable<ProgramContext, ProgramStore, IambInfo> for MessageState {
     }
 }
 
+impl ScrollActions<ProgramContext, ProgramStore, IambInfo> for MessageState {
+    fn dirscroll(
+        &mut self,
+        dir: MoveDir2D,
+        size: ScrollSize,
+        count: &Count,
+        ctx: &ProgramContext,
+        store: &mut ProgramStore,
+    ) -> EditResult<EditInfo, IambInfo> {
+        let mut corner = self.viewctx.corner;
+
+        let count = ctx.resolve(count);
+        let height = self.viewctx.get_height();
+        let mut rows = match size {
+            ScrollSize::Cell => count,
+            ScrollSize::HalfPage => count.saturating_mul(height) / 2,
+            ScrollSize::Page => count.saturating_mul(height),
+        };
+
+        match dir {
+            MoveDir2D::Up => {
+                corner = corner.saturating_sub(rows);
+            },
+            MoveDir2D::Down => {
+                corner += rows;
+            },
+            MoveDir2D::Left | MoveDir2D::Right => {
+                let msg = "Cannot scroll vertically in message view";
+                let err = EditError::Failure(msg.into());
+
+                return Err(err);
+            },
+        }
+
+        self.viewctx.corner = corner;
+
+        Ok(None)
+    }
+
+    fn cursorpos(
+        &mut self,
+        pos: MovePosition,
+        axis: Axis,
+        ctx: &ProgramContext,
+        store: &mut ProgramStore,
+    ) -> EditResult<EditInfo, IambInfo> {
+        match axis {
+            Axis::Horizontal => {
+                let msg = "Cannot scroll vertically in message view";
+                let err = EditError::Failure(msg.into());
+
+                Err(err)
+            },
+            Axis::Vertical => {
+                // implement if a cursor is shown
+                todo!()
+            },
+        }
+    }
+
+    fn linepos(
+        &mut self,
+        _: MovePosition,
+        _: &Count,
+        _: &ProgramContext,
+        _: &mut ProgramStore,
+    ) -> EditResult<EditInfo, IambInfo> {
+        let msg = "Cannot scroll in message view using line numbers";
+        let err = EditError::Failure(msg.into());
+
+        Err(err)
+    }
+}
+
 impl Scrollable<ProgramContext, ProgramStore, IambInfo> for MessageState {
     fn scroll(
         &mut self,
@@ -490,7 +611,17 @@ impl Scrollable<ProgramContext, ProgramStore, IambInfo> for MessageState {
         ctx: &ProgramContext,
         store: &mut ProgramStore,
     ) -> EditResult<EditInfo, IambInfo> {
-        todo!()
+        match style {
+            ScrollStyle::Direction2D(dir, size, count) => {
+                return self.dirscroll(*dir, *size, count, ctx, store);
+            },
+            ScrollStyle::CursorPos(pos, axis) => {
+                return self.cursorpos(*pos, *axis, ctx, store);
+            },
+            ScrollStyle::LinePos(pos, count) => {
+                return self.linepos(*pos, count, ctx, store);
+            },
+        }
     }
 }
 
@@ -524,8 +655,7 @@ impl StatefulWidget for MessageWidget<'_> {
         let info = self.store.application.rooms.get_or_default(state.room_id.clone());
         let settings = &self.store.application.settings;
 
-        let height = area.height as usize;
-        let width = area.width as usize;
+        state.set_term_info(area);
 
         let Some(msg) = info.get_event(&state.message_id) else {
             todo!()
@@ -543,11 +673,17 @@ impl StatefulWidget for MessageWidget<'_> {
         let mut lines = vec![];
 
         // push header
-        lines.push((user_date_line(msg, width, info, &settings.tunables), None));
+        lines
+            .push((user_date_line(msg, state.viewctx.get_width(), info, &settings.tunables), None));
 
         // push message
-        let (txt, [mut msg_preview, mut reply_preview]) =
-            msg.show_with_preview(Some(msg), false, width, info, &message_tunables);
+        let (txt, [mut msg_preview, mut reply_preview]) = msg.show_with_preview(
+            Some(msg),
+            false,
+            state.viewctx.get_width(),
+            info,
+            &message_tunables,
+        );
 
         for (row, line) in txt.lines.into_iter().enumerate() {
             // Only take the preview into the matching row number.
@@ -600,13 +736,18 @@ impl StatefulWidget for MessageWidget<'_> {
 
         // ---
 
-        std::mem::drop(lines.drain(..state.scroll_offset));
+        if state.viewctx.corner >= lines.len() {
+            state.viewctx.corner = lines.len() - 1;
+        }
+        state.lines = lines.len();
+
+        std::mem::drop(lines.drain(..state.viewctx.corner));
 
         let mut y = area.top();
         let x = area.left();
 
         let mut image_previews = vec![];
-        for (txt, line_preview) in lines.into_iter().take(height) {
+        for (txt, line_preview) in lines.into_iter().take(state.viewctx.get_height()) {
             let _ = buf.set_line(x, y, &txt, area.width);
             if let Some((backend, msg_x, _)) = line_preview {
                 image_previews.push((x + msg_x, y, backend));
