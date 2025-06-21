@@ -672,11 +672,11 @@ impl StatefulWidget for MessageWidget<'_> {
 
         let mut lines = vec![];
 
-        // push header
+        // header
         lines
             .push((user_date_line(msg, state.viewctx.get_width(), info, &settings.tunables), None));
 
-        // push message
+        // message
         let (txt, [mut msg_preview, mut reply_preview]) = msg.show_with_preview(
             Some(msg),
             false,
@@ -701,7 +701,7 @@ impl StatefulWidget for MessageWidget<'_> {
             lines.push((line, line_preview));
         }
 
-        // push reactions
+        // reactions
         if settings.tunables.reaction_display {
             for (key, users) in info.get_reactions(&state.message_id) {
                 let short = emojis::get(key).and_then(|emoji| emoji.shortcode()).or(
@@ -731,6 +731,24 @@ impl StatefulWidget for MessageWidget<'_> {
                     let user = settings.tunables.get_user_span(id, info);
                     lines.push((Span::raw("- ") + user, None));
                 }
+            }
+        }
+
+        // read receipts
+        if settings.tunables.read_receipt_display {
+            lines.push((Line::raw(""), None));
+            lines.push((
+                Line::styled("Last message seen by:", Style::new().add_modifier(Modifier::BOLD)),
+                None,
+            ));
+            for user in info
+                .event_receipts
+                .values()
+                .filter_map(|receipts| receipts.get(msg.event.event_id()))
+                .flat_map(|read| read.iter())
+            {
+                let user = settings.tunables.get_user_span(user, info);
+                lines.push((Span::raw("- ") + user, None))
             }
         }
 
