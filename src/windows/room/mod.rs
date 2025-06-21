@@ -703,6 +703,9 @@ impl RoomState {
                 spans.push("Thread in ".into());
             }
         }
+        if let RoomState::Message(_) = self {
+            spans.push("Message in ".into());
+        }
 
         spans.push(Span::styled(title, style));
 

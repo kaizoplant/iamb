@@ -63,14 +63,6 @@ impl MessageState {
     ) -> IambResult<EditInfo> {
         todo!()
     }
-    pub async fn send_command(
-        &mut self,
-        act: SendAction,
-        _: ProgramContext,
-        store: &mut ProgramStore,
-    ) -> IambResult<EditInfo> {
-        todo!()
-    }
 
     pub fn room(&self) -> &MatrixRoom {
         &self.room

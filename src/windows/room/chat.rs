@@ -1176,7 +1176,10 @@ mod tests {
 
     use modalkit::actions::{EditAction, InsertTextAction};
 
-    use crate::tests::{mock_store, TEST_ROOM1_ID};
+    use crate::{
+        base::RoomView,
+        tests::{mock_store, TEST_ROOM1_ID},
+    };
 
     macro_rules! move_line {
         ($dir: expr, $count: expr) => {
@@ -1195,7 +1198,7 @@ mod tests {
         let room_id = TEST_ROOM1_ID.clone();
         let scrollback = ScrollbackState::new(room_id.clone(), None);
 
-        let id = IambBufferId::Room(room_id, None, RoomFocus::MessageBar);
+        let id = IambBufferId::Room(room_id, RoomView::Main, RoomFocus::MessageBar);
         let ebuf = store.load_buffer(id);
         let mut tbox = TextBoxState::new(ebuf);
         let mut reply_to = None;
