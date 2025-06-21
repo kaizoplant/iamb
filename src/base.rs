@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::convert::TryFrom;
 use std::fmt::{self, Display};
 use std::hash::Hash;
+use std::ops::Deref;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -1002,21 +1003,27 @@ impl RoomInfo {
     }
 
     /// Get the reactions and their counts for a message.
-    pub fn get_reactions(&self, event_id: &EventId) -> Vec<(&str, usize)> {
+    pub fn get_reactions(&self, event_id: &EventId) -> Vec<(&str, Vec<&UserId>)> {
         if let Some(reacts) = self.reactions.get(event_id) {
-            let mut counts = HashMap::new();
+            let mut reactions = HashMap::new();
 
             let mut seen_user_reactions = BTreeSet::new();
 
             for (key, user) in reacts.values() {
                 if !seen_user_reactions.contains(&(key, user)) {
                     seen_user_reactions.insert((key, user));
-                    let count = counts.entry(key.as_str()).or_default();
-                    *count += 1;
+                    let reactions: &mut Vec<&UserId> = reactions.entry(key.as_str()).or_default();
+                    reactions.push(user.deref());
                 }
             }
 
-            let mut reactions = counts.into_iter().collect::<Vec<_>>();
+            let mut reactions = reactions
+                .into_iter()
+                .map(|(key, mut users)| {
+                    users.sort();
+                    (key, users)
+                })
+                .collect::<Vec<_>>();
             reactions.sort();
 
             reactions
@@ -2346,8 +2353,11 @@ pub mod tests {
         }
 
         assert_eq!(info.get_reactions(&owned_event_id!("$my_reaction")), vec![
-            ("🏠", 1),
-            ("🙂", 2)
+            ("🏠", vec![owned_user_id!("@foo:example.org").deref()]),
+            ("🙂", vec![
+                owned_user_id!("@bar:example.org").deref(),
+                owned_user_id!("@foo:example.org").deref(),
+            ])
         ]);
     }
 

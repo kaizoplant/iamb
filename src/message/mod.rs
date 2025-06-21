@@ -13,6 +13,7 @@ use humansize::{format_size, DECIMAL};
 use image::ImageReader;
 use matrix_sdk::ruma::events::receipt::ReceiptThread;
 use matrix_sdk::ruma::events::room::message::RoomMessageEventContentWithoutRelation;
+use matrix_sdk::ruma::UserId;
 use ratatui::style::Color;
 use serde_json::json;
 use unicode_width::UnicodeWidthStr;
@@ -824,7 +825,12 @@ impl<'a> MessageFormatter<'a> {
         proto
     }
 
-    fn push_reactions(&mut self, counts: Vec<(&'a str, usize)>, style: Style, text: &mut Text<'a>) {
+    fn push_reactions(
+        &mut self,
+        counts: Vec<(&'a str, Vec<&'a UserId>)>,
+        style: Style,
+        text: &mut Text<'a>,
+    ) {
         let mut emojis = printer::TextPrinter::new(self.width(), style, false, self.tunables);
         let mut reactions = 0;
 
@@ -854,7 +860,7 @@ impl<'a> MessageFormatter<'a> {
             emojis.push_str("[", style);
             emojis.push_str(name, style);
             emojis.push_str(" ", style);
-            emojis.push_span_nobreak(Span::styled(count.to_string(), style));
+            emojis.push_span_nobreak(Span::styled(count.len().to_string(), style));
             emojis.push_str("]", style);
 
             reactions += 1;

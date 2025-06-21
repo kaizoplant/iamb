@@ -536,6 +536,7 @@ impl StatefulWidget for MessageWidget<'_> {
         message_tunables.read_receipt_display = false;
         message_tunables.message_time_display = false;
         message_tunables.message_user_color = false;
+        message_tunables.reaction_display = false;
 
         // ---
 
@@ -564,6 +565,36 @@ impl StatefulWidget for MessageWidget<'_> {
             lines.push((line, line_preview));
         }
 
+        // push reactions
+        if settings.tunables.reaction_display {
+            for (key, users) in info.get_reactions(&state.message_id) {
+                let name = if settings.tunables.reaction_shortcode_display {
+                    if let Some(emoji) = emojis::get(key) {
+                        if let Some(short) = emoji.shortcode() {
+                            short
+                        } else {
+                            // No ASCII shortcode name to show.
+                            continue;
+                        }
+                    } else if key.chars().all(|c| c.is_ascii_alphanumeric()) {
+                        key
+                    } else {
+                        // Not an Emoji or a printable ASCII string.
+                        continue;
+                    }
+                } else {
+                    key
+                };
+                lines.push((Line::raw(""), None));
+                lines.push((Line::raw(format!("[{name} {}]", users.len())), None));
+
+                for id in users {
+                    let user = settings.tunables.get_user_span(id, info);
+                    lines.push((Span::raw("- ") + user, None));
+                }
+            }
+        }
+
         // ---
 
         std::mem::drop(lines.drain(..state.scroll_offset));
@@ -572,7 +603,7 @@ impl StatefulWidget for MessageWidget<'_> {
         let x = area.left();
 
         let mut image_previews = vec![];
-        for (txt, line_preview) in lines.into_iter() {
+        for (txt, line_preview) in lines.into_iter().take(height) {
             let _ = buf.set_line(x, y, &txt, area.width);
             if let Some((backend, msg_x, _)) = line_preview {
                 image_previews.push((x + msg_x, y, backend));
