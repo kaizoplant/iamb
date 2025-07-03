@@ -40,6 +40,7 @@ use ratatui::{
 };
 use ratatui::{prelude::Widget, text::Span};
 use ratatui_image::Image;
+use url::Url;
 
 use crate::{
     base::{
@@ -699,6 +700,24 @@ impl StatefulWidget for MessageWidget<'_> {
             });
 
             lines.push((line, line_preview));
+        }
+
+        // links
+        let links = if let Some(html) = &msg.html {
+            html.get_links()
+        } else if let Ok(url) = Url::parse(&msg.event.body()) {
+            vec![('0', url)]
+        } else {
+            vec![]
+        };
+
+        if !links.is_empty() {
+            lines.push((Line::raw(""), None));
+            lines.push((Line::styled("Links:", Style::new().add_modifier(Modifier::BOLD)), None));
+
+            for (c, url) in links {
+                lines.push((Line::raw(format!("[{c}] {url}")), None));
+            }
         }
 
         // reactions
