@@ -925,6 +925,9 @@ pub struct RoomInfo {
     /// The time that we last fetched scrollback for this room.
     pub fetch_last: Option<Instant>,
 
+    /// The oldest event in the unbroken history
+    pub fetch_event: Option<MessageKey>,
+
     /// Users currently typing in this room, and when we received notification of them doing so.
     pub users_typing: Option<(Instant, Vec<OwnedUserId>)>,
 
@@ -953,6 +956,7 @@ impl Default for RoomInfo {
             fetching: Default::default(),
             fetch_id: Default::default(),
             fetch_last: Default::default(),
+            fetch_event: Default::default(),
             users_typing: Default::default(),
             display_names: Default::default(),
             display_name_completion: Default::default(),
