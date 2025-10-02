@@ -543,6 +543,9 @@ pub enum IambAction {
 
     /// Clear all unread messages.
     ClearUnreads,
+
+    /// Reload the config.
+    ReloadConfig,
 }
 
 impl IambAction {
@@ -596,6 +599,7 @@ impl ApplicationAction for IambAction {
             IambAction::ToggleScrollbackFocus => SequenceStatus::Break,
             IambAction::Verify(..) => SequenceStatus::Break,
             IambAction::VerifyRequest(..) => SequenceStatus::Break,
+            IambAction::ReloadConfig => SequenceStatus::Break,
         }
     }
 
@@ -612,6 +616,7 @@ impl ApplicationAction for IambAction {
             IambAction::ToggleScrollbackFocus => SequenceStatus::Atom,
             IambAction::Verify(..) => SequenceStatus::Atom,
             IambAction::VerifyRequest(..) => SequenceStatus::Atom,
+            IambAction::ReloadConfig => SequenceStatus::Atom,
         }
     }
 
@@ -628,6 +633,7 @@ impl ApplicationAction for IambAction {
             IambAction::ToggleScrollbackFocus => SequenceStatus::Ignore,
             IambAction::Verify(..) => SequenceStatus::Ignore,
             IambAction::VerifyRequest(..) => SequenceStatus::Ignore,
+            IambAction::ReloadConfig => SequenceStatus::Ignore,
         }
     }
 
@@ -644,6 +650,7 @@ impl ApplicationAction for IambAction {
             IambAction::ToggleScrollbackFocus => false,
             IambAction::Verify(..) => false,
             IambAction::VerifyRequest(..) => false,
+            IambAction::ReloadConfig => false,
         }
     }
 }
