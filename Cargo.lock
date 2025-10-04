@@ -2435,6 +2435,7 @@ dependencies = [
  "serde_json",
  "shellexpand",
  "sled",
+ "smallvec",
  "temp-dir",
  "thiserror 1.0.69",
  "tokio",
