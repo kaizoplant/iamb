@@ -14,6 +14,8 @@ use std::time::{Duration, Instant};
 use futures::{stream::FuturesUnordered, StreamExt};
 use gethostname::gethostname;
 use matrix_sdk::ruma::events::room::MediaSource;
+use matrix_sdk::ruma::OwnedRoomAliasId;
+use matrix_sdk::OwnedServerName;
 use ratatui_image::picker::Picker;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio::sync::Semaphore;
@@ -436,34 +438,35 @@ fn members_insert(
 fn member_set_display_name(info: &mut RoomInfo, user_id: OwnedUserId, name: Option<String>) {
     let to_remove;
     if let Some(display_name) = name {
-        let ambiguous = info.display_names.iter_mut().any(|(_, (name, is_ambiguous))| {
-            if name == &display_name {
-                *is_ambiguous = true;
-                true
-            } else {
-                false
-            }
-        });
+        let names = info.display_name_completion.get_or_default(display_name.clone());
 
-        to_remove = info.display_names.insert(user_id, (display_name, ambiguous));
+        if !names.contains(&user_id) {
+            names.push(user_id.clone());
+        }
+
+        if names.len() == 2 {
+            // The name just got ambiguous.
+            info.display_names
+                .get_mut(&names[0])
+                .expect("internal cache has invalid state")
+                .1 = true;
+        }
+
+        to_remove = info.display_names.insert(user_id.clone(), (display_name, names.len() > 1));
     } else {
         to_remove = info.display_names.remove(&user_id);
     }
     if let Some((display_name, _)) = to_remove {
-        let mut names: Vec<_> = info
-            .display_names
-            .iter_mut()
-            .filter_map(|(_, (name, is_ambiguous))| {
-                if name == &display_name {
-                    Some(is_ambiguous)
-                } else {
-                    None
-                }
-            })
-            .collect();
+        let names = info.display_name_completion.get_or_default(display_name);
+
+        names.retain(|id| id != &user_id);
 
         if names.len() == 1 {
-            *names[0] = false;
+            // The name is no longer ambiguous.
+            info.display_names
+                .get_mut(&names[0])
+                .expect("internal cache has invalid state")
+                .1 = false;
         }
     }
 }
@@ -658,7 +661,8 @@ pub enum WorkerTask {
     Logout(String, ClientReply<IambResult<EditInfo>>),
     GetInviter(MatrixRoom, ClientReply<IambResult<Option<RoomMember>>>),
     GetRoom(OwnedRoomId, ClientReply<IambResult<FetchedRoom>>),
-    JoinRoom(String, ClientReply<IambResult<OwnedRoomId>>),
+    ResolveAlias(OwnedRoomAliasId, ClientReply<IambResult<OwnedRoomId>>),
+    JoinRoom(String, Vec<OwnedServerName>, ClientReply<IambResult<OwnedRoomId>>),
     Members(OwnedRoomId, ClientReply<IambResult<Vec<RoomMember>>>),
     SpaceMembers(OwnedRoomId, ClientReply<IambResult<Vec<OwnedRoomId>>>),
     TypingNotice(OwnedRoomId),
@@ -694,9 +698,16 @@ impl Debug for WorkerTask {
                     .field(&format_args!("_"))
                     .finish()
             },
-            WorkerTask::JoinRoom(s, _) => {
+            WorkerTask::ResolveAlias(s, _) => {
+                f.debug_tuple("WorkerTask::ResolveAlias")
+                    .field(s)
+                    .field(&format_args!("_"))
+                    .finish()
+            },
+            WorkerTask::JoinRoom(s, via, _) => {
                 f.debug_tuple("WorkerTask::JoinRoom")
                     .field(s)
+                    .field(via)
                     .field(&format_args!("_"))
                     .finish()
             },
@@ -838,10 +849,18 @@ impl Requester {
         return response.recv();
     }
 
-    pub fn join_room(&self, name: String) -> IambResult<OwnedRoomId> {
+    pub fn resolve_alias(&self, alias_id: OwnedRoomAliasId) -> IambResult<OwnedRoomId> {
         let (reply, response) = oneshot();
 
-        self.tx.send(WorkerTask::JoinRoom(name, reply)).unwrap();
+        self.tx.send(WorkerTask::ResolveAlias(alias_id, reply)).unwrap();
+
+        return response.recv();
+    }
+
+    pub fn join_room(&self, name: String, via: Vec<OwnedServerName>) -> IambResult<OwnedRoomId> {
+        let (reply, response) = oneshot();
+
+        self.tx.send(WorkerTask::JoinRoom(name, via, reply)).unwrap();
 
         return response.recv();
     }
@@ -948,9 +967,13 @@ impl ClientWorker {
                 self.init(store).await;
                 reply.send(());
             },
-            WorkerTask::JoinRoom(room_id, reply) => {
+            WorkerTask::ResolveAlias(alias_id, reply) => {
                 assert!(self.initialized);
-                reply.send(self.join_room(room_id).await);
+                reply.send(self.resolve_alias(alias_id).await);
+            },
+            WorkerTask::JoinRoom(name, via, reply) => {
+                assert!(self.initialized);
+                reply.send(self.join_room(name, via).await);
             },
             WorkerTask::GetInviter(invited, reply) => {
                 assert!(self.initialized);
@@ -1394,8 +1417,8 @@ impl ClientWorker {
     }
 
     async fn direct_message(&mut self, user: OwnedUserId) -> IambResult<OwnedRoomId> {
-        for room in self.client.rooms() {
-            if !is_direct(&room).await {
+        for room in self.client.joined_rooms().iter().chain(self.client.invited_rooms().iter()) {
+            if !is_direct(room).await {
                 continue;
             }
 
@@ -1427,7 +1450,11 @@ impl ClientWorker {
 
     async fn get_room(&mut self, room_id: OwnedRoomId) -> IambResult<FetchedRoom> {
         if let Some(room) = self.client.get_room(&room_id) {
-            let name = room.cached_display_name().ok_or_else(|| IambError::UnknownRoom(room_id))?;
+            let name = if let Some(name) = room.cached_display_name() {
+                name
+            } else {
+                room.display_name().await.map_err(IambError::from)?
+            };
             let tags = room.tags().await.map_err(IambError::from)?;
 
             Ok((room, name, tags))
@@ -1436,9 +1463,25 @@ impl ClientWorker {
         }
     }
 
-    async fn join_room(&mut self, name: String) -> IambResult<OwnedRoomId> {
+    async fn resolve_alias(&mut self, alias_id: OwnedRoomAliasId) -> IambResult<OwnedRoomId> {
+        match self.client.resolve_room_alias(&alias_id).await {
+            Ok(resp) => Ok(resp.room_id),
+            Err(e) => {
+                let msg = e.to_string();
+                let err = UIError::Failure(msg);
+
+                return Err(err);
+            },
+        }
+    }
+
+    async fn join_room(
+        &mut self,
+        name: String,
+        via: Vec<OwnedServerName>,
+    ) -> IambResult<OwnedRoomId> {
         if let Ok(alias_id) = OwnedRoomOrAliasId::from_str(name.as_str()) {
-            match self.client.join_room_by_id_or_alias(&alias_id, &[]).await {
+            match self.client.join_room_by_id_or_alias(&alias_id, &via).await {
                 Ok(resp) => Ok(resp.room_id().to_owned()),
                 Err(e) => {
                     let msg = e.to_string();
