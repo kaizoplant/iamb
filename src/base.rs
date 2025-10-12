@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 use emojis::Emoji;
 use matrix_sdk::ruma::events::receipt::ReceiptThread;
 use matrix_sdk::ruma::events::room::MediaSource;
+use matrix_sdk::ruma::events::sticker::StickerEvent;
 use matrix_sdk::ruma::room_version_rules::RedactionRules;
 use matrix_sdk::ruma::OwnedMxcUri;
 use matrix_sdk::ruma::OwnedRoomAliasId;
@@ -864,14 +865,16 @@ pub enum EventLocation {
 
     /// The [EventId] belongs to an edit for the given event and has key [MessageKey].
     Edit(OwnedEventId, MessageKey),
+    /// The [EventId] belongs to a sticker event in the main scrollback
+    Sticker(MessageKey),
 }
 
 impl EventLocation {
     fn to_message_key(&self) -> Option<&MessageKey> {
-        if let EventLocation::Message(_, key) = self {
-            Some(key)
-        } else {
-            None
+        match self {
+            EventLocation::Message(_, key) => Some(key),
+            EventLocation::Sticker(key) => Some(key),
+            _ => None,
         }
     }
 }
@@ -1072,6 +1075,7 @@ impl RoomInfo {
         let (thread_root, key) = match self.keys.get(event_id)? {
             EventLocation::Message(thread_root, key) => (thread_root, key),
             EventLocation::State(key) => (&None, key),
+            EventLocation::Sticker(key) => (&None, key),
             _ => return None,
         };
 
@@ -1135,6 +1139,12 @@ impl RoomInfo {
 
                 self.keys.remove(redacts);
             },
+            Some(EventLocation::Sticker(key)) => {
+                if let Some(msg) = self.messages.get_mut(key) {
+                    let ev = SyncRoomRedactionEvent::Original(ev);
+                    msg.redact(ev, rules);
+                }
+            },
         }
     }
 
@@ -1179,6 +1189,46 @@ impl RoomInfo {
         if let (Some(source), Some(_)) = (source, &settings.tunables.image_preview) {
             let size = ImagePreviewSize { width: 2, height: 1 };
             previews.register_preview(settings, source, PreviewKind::Reaction, size, worker);
+        }
+    }
+
+    /// Insert a sticker
+    pub fn insert_sticker(
+        &mut self,
+        sticker: StickerEvent,
+        settings: &ApplicationSettings,
+        previews: &mut PreviewManager,
+        worker: &Requester,
+    ) {
+        match sticker {
+            MessageLikeEvent::Original(ref sticker_content) => {
+                let key =
+                    (sticker_content.origin_server_ts.into(), sticker_content.event_id.clone());
+
+                let loc = EventLocation::Sticker(key.clone());
+                let source = sticker_content.content.source.clone();
+
+                self.keys.insert(sticker_content.event_id.clone(), loc);
+                self.messages.insert_message(key.clone(), sticker.clone());
+
+                if let (Some(msg), Some(image_preview)) = (
+                    self.get_event_mut(&sticker_content.event_id),
+                    &settings.tunables.image_preview,
+                ) {
+                    msg.image_preview = Some(source.clone().into());
+                    previews.register_preview(
+                        settings,
+                        source.into(),
+                        PreviewKind::Message,
+                        image_preview.size,
+                        worker,
+                    )
+                }
+            },
+            MessageLikeEvent::Redacted(ref redaction) => {
+                let key = (redaction.origin_server_ts.into(), redaction.event_id.clone());
+                self.messages.insert_message(key.clone(), sticker.clone());
+            },
         }
     }
 
@@ -1228,7 +1278,8 @@ impl RoomInfo {
                 MessageEvent::EncryptedRedacted(_) |
                 MessageEvent::Original(_, _) |
                 MessageEvent::Redacted(_) |
-                MessageEvent::Local(_, _, _) => Some(key),
+                MessageEvent::Local(_, _, _) |
+                MessageEvent::Sticker(_) => Some(key),
 
                 MessageEvent::State(_) | MessageEvent::Edit(_) => None,
             }
@@ -1240,8 +1291,11 @@ impl RoomInfo {
             .and_then(|receipts| receipts.get(&settings.profile.user_id));
         let last_receipt = last_receipt.as_ref().and_then(|event_id| {
             match &self.keys.get(*event_id)? {
-                EventLocation::Message(_, key) | EventLocation::State(key) => Some(key),
-                EventLocation::Reaction(_) | EventLocation::Edit(_, _) => None,
+                EventLocation::Message(_, key) |
+                EventLocation::State(key) |
+                EventLocation::Edit(_, key) |
+                EventLocation::Sticker(key) => Some(key),
+                EventLocation::Reaction(_) => None,
             }
         });
 
@@ -1251,8 +1305,11 @@ impl RoomInfo {
             .and_then(|receipts| receipts.get(&settings.profile.user_id));
         let last_unthreaded = last_unthreaded.as_ref().and_then(|event_id| {
             match &self.keys.get(*event_id)? {
-                EventLocation::Message(_, key) | EventLocation::State(key) => Some(key),
-                EventLocation::Reaction(_) | EventLocation::Edit(_, _) => None,
+                EventLocation::Message(_, key) |
+                EventLocation::State(key) |
+                EventLocation::Edit(_, key) |
+                EventLocation::Sticker(key) => Some(key),
+                EventLocation::Reaction(_) => None,
             }
         });
 
