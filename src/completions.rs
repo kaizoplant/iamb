@@ -465,25 +465,25 @@ fn complete_cmdarg(
         "verify" => complete_iamb_verify(args, store),
 
         // These have no arguments
-        "dms" | "members" | "leave" | "forget" | "cancel" | "edit" => vec![],
+        "dms" | "members" | "m" | "leave" | "forget" | "cancel" | "edit" | "e" => vec![],
 
-        "react" if args.len() == 1 => complete_emoji(&args[0], store),
-        "react" => vec![],
+        "react" | "rc" | "reac" | "rct" if args.len() == 1 => complete_emoji(&args[0], store),
+        "react" | "rc" | "reac" | "rct" => vec![],
 
         // TODO: Check whether we can get the id of the focused message to improve completion
-        "unreact" if args.len() == 1 => complete_emoji(&args[0], store),
-        "unreact" => vec![],
+        "unreact" | "unr" if args.len() == 1 => complete_emoji(&args[0], store),
+        "unreact" | "unr" => vec![],
 
         // The redaction reason is free text
-        "redact" => vec![],
+        "redact" | "red" => vec![],
 
         // These have no arguments
-        "reply" | "replied" | "editor" | "rooms" | "chats" => vec![],
+        "reply" | "rep" | "replied" | "editor" | "ed" | "rooms" | "ro" | "chats" | "c" => vec![],
 
-        "unreads" => complete_iamb_unreads(args),
+        "unreads" | "u" => complete_iamb_unreads(args),
 
         // These have no arguments
-        "spaces" | "welcome" => vec![],
+        "spaces" | "s" | "welcome" => vec![],
 
         "join" if args.len() == 1 => complete_matrix_aliases(&args[0], store),
         "join" => vec![],
@@ -494,7 +494,7 @@ fn complete_cmdarg(
 
         "space" => complete_iamb_space(args, store),
 
-        "upload" | "download" | "open" => {
+        "upload" | "up" | "download" | "d" | "open" | "o" => {
             if input.get_char_at_cursor(cursor) == Some('"') {
                 // Use the escaped instead of the qouted filename.
                 let mut args = args;
