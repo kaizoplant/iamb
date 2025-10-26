@@ -1065,7 +1065,7 @@ impl RoomInfo {
 
                 if let Some(msg) = self.messages.get_mut(&edit_key) {
                     let ev = SyncRoomRedactionEvent::Original(ev);
-                    msg.redact(ev, room_version);
+                    msg.redact(ev, rules);
                 }
             },
             Some(EventLocation::State(key)) => {
@@ -1169,7 +1169,7 @@ impl RoomInfo {
         let last_receipt = last_receipt.as_ref().and_then(|event_id| {
             match &self.keys.get(*event_id)? {
                 EventLocation::Message(_, key) | EventLocation::State(key) => Some(key),
-                EventLocation::Reaction(_) => None,
+                EventLocation::Reaction(_) | EventLocation::Edit(_, _) => None,
             }
         });
 
@@ -1180,7 +1180,7 @@ impl RoomInfo {
         let last_unthreaded = last_unthreaded.as_ref().and_then(|event_id| {
             match &self.keys.get(*event_id)? {
                 EventLocation::Message(_, key) | EventLocation::State(key) => Some(key),
-                EventLocation::Reaction(_) => None,
+                EventLocation::Reaction(_) | EventLocation::Edit(_, _) => None,
             }
         });
 

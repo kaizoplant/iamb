@@ -115,11 +115,11 @@ fn msg_not_hidden(item: &(&MessageKey, &Message)) -> bool {
     !matches!(&item.1.event, MessageEvent::Edit(_))
 }
 
-fn first_key<'a>(thread: &'a Messages) -> Option<&'a MessageKey> {
+fn first_key(thread: &Messages) -> Option<&MessageKey> {
     thread.iter().find(msg_not_hidden).map(|(k, _)| k)
 }
 
-fn last_key_value<'a>(thread: &'a Messages) -> Option<(&'a MessageKey, &'a Message)> {
+fn last_key_value(thread: &Messages) -> Option<(&MessageKey, &Message)> {
     thread.iter().filter(msg_not_hidden).next_back()
 }
 
