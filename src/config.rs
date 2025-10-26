@@ -1073,7 +1073,7 @@ impl ApplicationSettings {
             (None, UserDisplayStyle::DisplayName) => {
                 if let Some((name, ambiguous)) = info.display_names.get(user_id) {
                     if *ambiguous {
-                        Cow::Owned(format!("{}({})", name, user_id))
+                        Cow::Owned(format!("{name}({user_id})"))
                     } else {
                         Cow::Borrowed(name.as_str())
                     }
