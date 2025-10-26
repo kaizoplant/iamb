@@ -214,7 +214,7 @@ fn resolve_mxid(
                 None if join_or_create => {
                     store.application.worker.join_room(user_id.to_string(), via.to_owned())?
                 },
-                None => return Ok(Err(format!("No dm with {} found. Create new DM?", user_id))),
+                None => return Ok(Err(format!("No dm with {user_id} found. Create new DM?"))),
             }
         },
         MatrixId::Event(owned_room_or_alias_id, _event_id) => {
@@ -244,7 +244,7 @@ fn resolve_mxid(
         if join_or_create {
             store.application.worker.join_room(room_id.to_string(), via.to_owned())?;
         } else {
-            return Ok(Err(format!("Join room {:?}?", room_name)));
+            return Ok(Err(format!("Join room {room_name:?}?")));
         }
     }
 

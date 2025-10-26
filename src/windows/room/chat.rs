@@ -6,11 +6,11 @@ use std::path::{Path, PathBuf};
 
 use edit::edit_with_builder as external_edit;
 use edit::Builder;
-use matrix_sdk::EncryptionState;
 use matrix_sdk::ruma::events::room::message::{MessageFormat, ReplacementMetadata};
 use matrix_sdk::ruma::events::Mentions;
 use matrix_sdk::ruma::matrix_uri::MatrixId;
 use matrix_sdk::ruma::MatrixToUri;
+use matrix_sdk::EncryptionState;
 use modalkit::editing::store::RegisterError;
 use ratatui::style::{Color, Style};
 use regex::Regex;
@@ -599,7 +599,7 @@ impl ChatState {
                         }
                     }
                     let metadata = ReplacementMetadata::new(event_id.to_owned(), mentions);
-                    msg = msg.make_replacement(metadata, None);
+                    msg = msg.make_replacement(metadata);
 
                     show_echo = false;
                 } else if let Some(thread_root) = self.scrollback.thread() {
