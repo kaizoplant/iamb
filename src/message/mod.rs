@@ -62,7 +62,7 @@ use ratatui_image::protocol::Protocol;
 
 use crate::base::MessageEdits;
 use crate::config::ImagePreviewSize;
-use crate::preview::{ImageStatus, PreviewManager};
+use crate::preview::{ImageStatus, PreviewKind, PreviewManager};
 use crate::{
     base::RoomInfo,
     config::ApplicationSettings,
@@ -829,17 +829,38 @@ impl<'a> MessageFormatter<'a> {
         proto
     }
 
-    fn push_reactions(&mut self, counts: Vec<(&'a str, usize)>, style: Style, text: &mut Text<'a>) {
+    fn push_reactions(
+        &mut self,
+        counts: Vec<(&'a str, usize, &'a Option<MediaSource>)>,
+        style: Style,
+        text: &mut Text<'a>,
+        settings: &ApplicationSettings,
+        previews: &'a PreviewManager,
+    ) -> Vec<ProtocolPreview<'a>> {
         let mut emojis =
             printer::TextPrinter::new(self.width(), style, false, self.settings, self.info);
         let mut reactions = 0;
+        let mut protos = Vec::new();
 
-        for (key, count) in counts {
+        for (key, count, source) in counts {
             if reactions != 0 {
                 emojis.push_str(" ", style);
             }
 
-            let name = if self.settings.tunables.reaction_shortcode_display {
+            let proto = match source
+                .as_ref()
+                .and_then(|source| previews.get(source, PreviewKind::Reaction))
+            {
+                Some(ImageStatus::Loaded(backend)) => Some(Some(backend)),
+                // Use empty space as placeholder
+                Some(ImageStatus::Queued(_)) | Some(ImageStatus::Downloading(_)) => Some(None),
+                // Fall back to text
+                None | Some(ImageStatus::Error(_)) => None,
+            };
+
+            let name = if proto.is_some() {
+                "  "
+            } else if self.settings.tunables.reaction_shortcode_display {
                 if let Some(emoji) = emojis::get(key) {
                     if let Some(short) = emoji.shortcode() {
                         short
@@ -858,6 +879,13 @@ impl<'a> MessageFormatter<'a> {
             };
 
             emojis.push_str("[", style);
+            if let Some(Some(proto)) = proto {
+                let (x, y) = emojis.curosor_pos();
+                let y = (y + text.lines.len()) as u16;
+                let x = x as u16 + self.cols.user_gutter_width(settings);
+
+                protos.push((proto, x, y));
+            }
             emojis.push_str(name, style);
             emojis.push_str(" ", style);
             emojis.push_span_nobreak(Span::styled(count.to_string(), style));
@@ -869,6 +897,8 @@ impl<'a> MessageFormatter<'a> {
         if reactions > 0 {
             self.push_text(emojis.finish(), style, text);
         }
+
+        protos
     }
 
     fn push_thread_reply_count(&mut self, len: usize, text: &mut Text<'a>) {
@@ -1098,7 +1128,7 @@ impl Message {
         info: &'a RoomInfo,
         settings: &'a ApplicationSettings,
         previews: &'a PreviewManager,
-    ) -> (Text<'a>, [Option<ProtocolPreview<'a>>; 2]) {
+    ) -> (Text<'a>, Vec<ProtocolPreview<'a>>) {
         let width = vwctx.get_width();
 
         let style = self.get_render_style(selected, settings);
@@ -1106,13 +1136,18 @@ impl Message {
         let mut text = Text::default();
         let width = fmt.width();
 
+        let mut protos = Vec::new();
+
         // Show the message that this one replied to, if any.
         let reply = self.reply_to().or_else(|| self.thread_root()).map(|e| info.get_event(&e));
-        let proto_reply = reply.as_ref().and_then(|r| {
-            if let Some(r) = r {
-                // Format the reply header, push it into the `Text` buffer, and get any image.
-                fmt.push_in_reply(r, style, &mut text, info, settings, previews)
-            } else {
+        match &reply {
+            Some(Some(r)) => {
+                let proto = fmt.push_in_reply(r, style, &mut text, info, settings, previews);
+                if let Some(proto) = proto {
+                    protos.push(proto);
+                }
+            },
+            Some(None) => {
                 fmt.push_spans(
                     Line::from(vec![
                         Span::styled(" ", style),
@@ -1123,22 +1158,23 @@ impl Message {
                     style,
                     &mut text,
                 );
-                None
-            }
-        });
+            },
+            None => {},
+        }
 
         // Now show the message contents, and the inlined reply if we couldn't find it above.
         let (msg, proto) = self.show_msg(width, style, true, settings, info, previews);
 
         // Given our text so far, determine the image offset.
-        let proto_main = proto.map(|p| {
+        if let Some(p) = proto {
             let y_off = text.lines.len() as u16;
             let x_off = fmt.cols.user_gutter_width(settings);
             // Adjust y_off by 1 if a date was printed before the message to account for
             // the extra line we're going to print.
             let y_off = if fmt.date.is_some() { y_off + 1 } else { y_off };
-            (p, x_off, y_off)
-        });
+
+            protos.push((p, x_off, y_off));
+        }
 
         fmt.push_text(msg, style, &mut text);
 
@@ -1160,14 +1196,15 @@ impl Message {
 
         if settings.tunables.reaction_display {
             let reactions = info.get_reactions(self.event.event_id());
-            fmt.push_reactions(reactions, style, &mut text);
+            let react_protos = fmt.push_reactions(reactions, style, &mut text, settings, previews);
+            protos.extend(react_protos);
         }
 
         if let Some(thread) = info.get_thread(Some(self.event.event_id())) {
             fmt.push_thread_reply_count(thread.len(), &mut text);
         }
 
-        (text, [proto_main, proto_reply])
+        (text, protos)
     }
 
     pub fn show<'a>(
@@ -1204,21 +1241,24 @@ impl Message {
             }
 
             let mut proto = None;
-            let placeholder =
-                match self.image_preview.as_ref().and_then(|source| previews.get(source)) {
-                    None => None,
-                    Some(ImageStatus::Queued(image_preview_size)) => {
-                        placeholder_frame(Some("Queued..."), width, image_preview_size)
-                    },
-                    Some(ImageStatus::Downloading(image_preview_size)) => {
-                        placeholder_frame(Some("Downloading..."), width, image_preview_size)
-                    },
-                    Some(ImageStatus::Loaded(backend)) => {
-                        proto = Some(backend);
-                        placeholder_frame(Some("No Space..."), width, &backend.area().into())
-                    },
-                    Some(ImageStatus::Error(err)) => Some(format!("[Image error: {err}]\n")),
-                };
+            let placeholder = match self
+                .image_preview
+                .as_ref()
+                .and_then(|source| previews.get(source, PreviewKind::Message))
+            {
+                None => None,
+                Some(ImageStatus::Queued(image_preview_size)) => {
+                    placeholder_frame(Some("Queued..."), width, image_preview_size)
+                },
+                Some(ImageStatus::Downloading(image_preview_size)) => {
+                    placeholder_frame(Some("Downloading..."), width, image_preview_size)
+                },
+                Some(ImageStatus::Loaded(backend)) => {
+                    proto = Some(backend);
+                    placeholder_frame(Some("No Space..."), width, &backend.area().into())
+                },
+                Some(ImageStatus::Error(err)) => Some(format!("[Image error: {err}]\n")),
+            };
 
             if let Some(placeholder) = placeholder {
                 msg.to_mut().insert_str(0, &placeholder);
