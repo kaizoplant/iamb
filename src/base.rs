@@ -953,7 +953,7 @@ pub struct RoomInfo {
 impl Default for RoomInfo {
     fn default() -> Self {
         Self {
-            messages: Messages::new(ReceiptThread::Main),
+            messages: Messages::new(ReceiptThread::Unthreaded),
 
             name: Default::default(),
             tags: Default::default(),

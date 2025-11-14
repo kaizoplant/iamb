@@ -205,7 +205,7 @@ pub async fn create_room(
 
 async fn update_event_receipts(info: &mut RoomInfo, room: &MatrixRoom, event_id: &EventId) {
     let receipts = match room
-        .load_event_receipts(ReceiptType::Read, ReceiptThread::Main, event_id)
+        .load_event_receipts(ReceiptType::Read, ReceiptThread::Unthreaded, event_id)
         .await
     {
         Ok(receipts) => receipts,
@@ -216,7 +216,7 @@ async fn update_event_receipts(info: &mut RoomInfo, room: &MatrixRoom, event_id:
     };
 
     for (user_id, _) in receipts {
-        info.set_receipt(ReceiptThread::Main, user_id, event_id.to_owned());
+        info.set_receipt(ReceiptThread::Unthreaded, user_id, event_id.to_owned());
     }
 }
 
@@ -303,7 +303,7 @@ async fn load_older_one(
 
             let event_id = msg.event_id();
             let receipts = match room
-                .load_event_receipts(ReceiptType::Read, ReceiptThread::Main, event_id)
+                .load_event_receipts(ReceiptType::Read, ReceiptThread::Unthreaded, event_id)
                 .await
             {
                 Ok(receipts) => receipts.into_iter().map(|(u, _)| u).collect(),
@@ -344,7 +344,7 @@ fn load_insert(
                 let _ = presences.get_or_default(sender);
 
                 for user_id in receipts {
-                    info.set_receipt(ReceiptThread::Main, user_id, msg.event_id().to_owned());
+                    info.set_receipt(ReceiptThread::Unthreaded, user_id, msg.event_id().to_owned());
                 }
 
                 match msg {
