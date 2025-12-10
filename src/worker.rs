@@ -1200,6 +1200,7 @@ impl ClientWorker {
                             continue;
                         };
                         for (user_id, rcpt) in receipts.iter() {
+                            tracing::error!("{:?}", rcpt.thread);
                             info.set_receipt(
                                 rcpt.thread.clone(),
                                 user_id.to_owned(),

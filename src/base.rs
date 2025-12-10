@@ -1272,14 +1272,20 @@ impl RoomInfo {
 
     /// Indicates whether this room has unread messages.
     pub fn unreads(&self, settings: &ApplicationSettings) -> UnreadInfo {
-        let last_message = self.messages.iter().rev().find_map(|(key, msg)| {
+        let last_message = self.messages.iter().rev().find_map(|(key, msg)| { 
             match &msg.event {
                 MessageEvent::EncryptedOriginal(_) |
                 MessageEvent::EncryptedRedacted(_) |
                 MessageEvent::Original(_, _) |
                 MessageEvent::Redacted(_) |
                 MessageEvent::Local(_, _, _) |
-                MessageEvent::Sticker(_) => Some(key),
+                MessageEvent::Sticker(_) => {
+                    if msg.sender == settings.profile.user_id{
+                        None
+                    } else {
+                        Some(key)
+                    }
+                },
 
                 MessageEvent::State(_) | MessageEvent::Edit(_) => None,
             }
