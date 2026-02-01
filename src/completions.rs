@@ -492,6 +492,9 @@ fn complete_cmdarg(
 
         "room" => complete_iamb_room(args, store),
 
+        // This has no arguments
+        "message" => vec![],
+
         "space" => complete_iamb_space(args, store),
 
         "upload" | "up" | "download" | "d" | "open" | "o" => {

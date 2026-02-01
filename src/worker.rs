@@ -11,8 +11,10 @@ use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use futures::future::join_all;
 use futures::{stream::FuturesUnordered, StreamExt};
 use gethostname::gethostname;
+use matrix_sdk::deserialized_responses::{TimelineEvent, TimelineEventKind};
 use matrix_sdk::ruma::events::room::MediaSource;
 use matrix_sdk::ruma::OwnedRoomAliasId;
 use matrix_sdk::OwnedServerName;
@@ -20,7 +22,7 @@ use ratatui_image::picker::Picker;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
-use tracing::{error, warn};
+use tracing::{debug, error, warn};
 use url::Url;
 
 use matrix_sdk::{
@@ -223,6 +225,7 @@ async fn update_event_receipts(info: &mut RoomInfo, room: &MatrixRoom, event_id:
 enum Plan {
     Messages(OwnedRoomId, Option<String>, Vec<MessageNeed>),
     Members(OwnedRoomId),
+    Events(OwnedRoomId, Vec<OwnedEventId>),
 }
 
 async fn load_plans(store: &AsyncProgramStore) -> Vec<Plan> {
@@ -250,6 +253,9 @@ async fn load_plans(store: &AsyncProgramStore) -> Vec<Plan> {
         if need.members {
             plan.push(Plan::Members(room_id.to_owned()));
         }
+        if !need.events.is_empty() {
+            plan.push(Plan::Events(room_id, need.events));
+        }
     }
 
     return plan;
@@ -270,6 +276,11 @@ async fn run_plan(client: &Client, store: &AsyncProgramStore, plan: Plan, permit
             let res = members_load(client, &room_id).await;
             let mut locked = store.lock().await;
             members_insert(room_id, res, locked.deref_mut());
+        },
+        Plan::Events(room_id, events) => {
+            let res = events_load(client, &room_id, events).await;
+            let mut locked = store.lock().await;
+            events_insert(room_id, res, locked.deref_mut());
         },
     }
     drop(permit);
@@ -328,7 +339,15 @@ fn load_insert(
     locked: &mut ProgramStore,
     message_needs: Vec<MessageNeed>,
 ) {
-    let ChatStore { presences, rooms, previews, settings, worker, .. } = &mut locked.application;
+    let ChatStore {
+        presences,
+        rooms,
+        worker,
+        previews,
+        settings,
+        need_load,
+        ..
+    } = &mut locked.application;
     let info = rooms.get_or_default(room_id.clone());
     info.fetching = false;
 
@@ -351,7 +370,7 @@ fn load_insert(
                         info.insert_encrypted(msg);
                     },
                     AnyTimelineEvent::MessageLike(AnyMessageLikeEvent::RoomMessage(msg)) => {
-                        info.insert_with_preview(msg, settings, previews, worker);
+                        info.insert_with_preview(msg, settings, need_load, previews, worker);
                     },
                     AnyTimelineEvent::MessageLike(AnyMessageLikeEvent::Reaction(ev)) => {
                         info.insert_reaction_with_preview(ev, settings, previews, worker);
@@ -421,6 +440,25 @@ async fn members_load(client: &Client, room_id: &RoomId) -> IambResult<Vec<RoomM
     }
 }
 
+async fn events_load(
+    client: &Client,
+    room_id: &RoomId,
+    events: Vec<OwnedEventId>,
+) -> IambResult<Vec<TimelineEvent>> {
+    if let Some(room) = client.get_room(room_id) {
+        let res = join_all(
+            events
+                .into_iter()
+                .map(async |event_id| room.load_or_fetch_event(&event_id, None).await),
+        )
+        .await;
+
+        Ok(res.into_iter().filter_map(Result::ok).collect())
+    } else {
+        Err(IambError::UnknownRoom(room_id.to_owned()).into())
+    }
+}
+
 fn members_insert(
     room_id: OwnedRoomId,
     res: IambResult<Vec<RoomMember>>,
@@ -473,6 +511,74 @@ fn member_set_display_name(info: &mut RoomInfo, user_id: OwnedUserId, name: Opti
                 .1 = false;
         }
     }
+}
+
+fn events_insert(
+    room_id: OwnedRoomId,
+    res: IambResult<Vec<TimelineEvent>>,
+    locked: &mut ProgramStore,
+) {
+    if let Ok(events) = res {
+        let ChatStore { rooms, worker, previews, settings, need_load, .. } =
+            &mut locked.application;
+        let info = rooms.get_or_default(room_id.clone());
+
+        for event in events {
+            let event = match event.kind {
+                TimelineEventKind::Decrypted(event) => {
+                    match event.event.deserialize() {
+                        Ok(event) => event,
+                        Err(err) => {
+                            warn!(
+                                err = %err,
+                                room_id = room_id.as_str(),
+                                raw_event = ?event,
+                                "Failed to deserialize event"
+                            );
+                            continue;
+                        },
+                    }
+                },
+                TimelineEventKind::UnableToDecrypt { event, utd_info: _ } |
+                TimelineEventKind::PlainText { event } => {
+                    let event = match event.deserialize() {
+                        Ok(event) => event,
+                        Err(err) => {
+                            warn!(
+                                err = %err,
+                                room_id = room_id.as_str(),
+                                raw_event = ?event,
+                                "Failed to deserialize event"
+                            );
+                            continue;
+                        },
+                    };
+                    event.into_full_event(room_id.clone())
+                },
+            };
+            match event {
+                AnyTimelineEvent::MessageLike(AnyMessageLikeEvent::RoomEncrypted(msg)) => {
+                    info.insert_encrypted(msg);
+                },
+                AnyTimelineEvent::MessageLike(AnyMessageLikeEvent::RoomMessage(msg)) => {
+                    info.insert_with_preview(msg, settings, need_load, previews, worker);
+                },
+                AnyTimelineEvent::MessageLike(AnyMessageLikeEvent::Reaction(ev)) => {
+                    info.insert_reaction_with_preview(ev, settings, previews, worker);
+                },
+                AnyTimelineEvent::MessageLike(ev) => {
+                    debug!("Ignoring unimplemented event type {}", ev.event_type());
+                    continue;
+                },
+                AnyTimelineEvent::State(msg) => {
+                    if settings.tunables.state_event_display {
+                        info.insert_any_state(msg.into());
+                    }
+                },
+            }
+        }
+    }
+    // else ???
 }
 
 async fn load_older_forever(client: &Client, store: &AsyncProgramStore) {
@@ -1116,14 +1222,14 @@ impl ClientWorker {
                     let sender = ev.sender().to_owned();
                     let _ = locked.application.presences.get_or_default(sender);
 
-                    let ChatStore { rooms, previews, settings, worker, .. } =
+                    let ChatStore { rooms, previews, settings, worker, need_load, .. } =
                         &mut locked.application;
                     let info = rooms.get_or_default(room_id.to_owned());
 
                     update_event_receipts(info, &room, ev.event_id()).await;
 
                     let full_ev = ev.into_full_event(room_id.to_owned());
-                    info.insert_with_preview(full_ev, settings, previews, worker);
+                    info.insert_with_preview(full_ev, settings, need_load, previews, worker);
                 }
             },
         );

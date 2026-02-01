@@ -86,6 +86,7 @@ mod completions;
 #[cfg(test)]
 mod tests;
 
+use crate::base::RoomView;
 use crate::{
     base::{
         AsyncProgramStore,
@@ -154,13 +155,13 @@ fn config_tab_to_desc(
             let window = match window {
                 config::WindowPath::UserId(user_id) => {
                     let room_id = worker.join_room(user_id.to_string(), vec![])?;
-                    IambId::Room(room_id, None)
+                    IambId::Room(room_id, RoomView::Main)
                 },
-                config::WindowPath::RoomId(room_id) => IambId::Room(room_id, None),
+                config::WindowPath::RoomId(room_id) => IambId::Room(room_id, RoomView::Main),
                 config::WindowPath::AliasId(alias) => {
                     let room_id = worker.join_room(alias.to_string(), vec![])?;
                     names.insert(alias, room_id.clone());
-                    IambId::Room(room_id, None)
+                    IambId::Room(room_id, RoomView::Main)
                 },
                 config::WindowPath::Window(id) => id,
             };
@@ -200,6 +201,7 @@ fn resolve_mxid(
     join_or_create: bool,
 ) -> IambResult<Result<IambId, String>> {
     let mut room_name = String::new();
+    let mut event_id = None;
     let room_id = match id {
         MatrixId::Room(id) => {
             room_name = id.to_string();
@@ -218,8 +220,8 @@ fn resolve_mxid(
                 None => return Ok(Err(format!("No dm with {user_id} found. Create new DM?"))),
             }
         },
-        MatrixId::Event(owned_room_or_alias_id, _event_id) => {
-            // ignore event id for now
+        MatrixId::Event(owned_room_or_alias_id, ev_id) => {
+            event_id = Some(ev_id);
             room_name = owned_room_or_alias_id.to_string();
             let room_or_alias_id: &matrix_sdk::ruma::RoomOrAliasId = &owned_room_or_alias_id;
             if let Ok(alias_id) = <&matrix_sdk::ruma::RoomAliasId>::try_from(room_or_alias_id) {
@@ -249,7 +251,11 @@ fn resolve_mxid(
         }
     }
 
-    Ok(Ok(IambId::Room(room_id, None)))
+    if let Some(event_id) = event_id {
+        Ok(Ok(IambId::Room(room_id, RoomView::Message(event_id))))
+    } else {
+        Ok(Ok(IambId::Room(room_id, RoomView::Main)))
+    }
 }
 
 fn setup_screen(
@@ -675,7 +681,11 @@ impl Application {
             },
             IambAction::Keys(act) => self.keys_command(act, ctx, store).await?,
             IambAction::Message(act) => {
-                self.screen.current_window_mut()?.message_command(act, ctx, store).await?
+                let acts =
+                    self.screen.current_window_mut()?.message_command(act, ctx, store).await?;
+                self.action_prepend(acts);
+
+                None
             },
             IambAction::Space(act) => {
                 self.screen.current_window_mut()?.space_command(act, ctx, store).await?
@@ -754,7 +764,7 @@ impl Application {
             HomeserverAction::CreateRoom(alias, vis, flags) => {
                 let client = &store.application.worker.client;
                 let room_id = create_room(client, alias, vis, flags).await?;
-                let room = IambId::Room(room_id, None);
+                let room = IambId::Room(room_id, RoomView::Main);
                 let target = OpenTarget::Application(room);
                 let action = WindowAction::Switch(target);
 
