@@ -18,7 +18,7 @@ use ratatui::style::{Color, Modifier as StyleModifier, Style};
 use ratatui::text::Span;
 use ratatui_image::picker::ProtocolType;
 use serde::{de::Error as SerdeError, de::Visitor, Deserialize, Deserializer, Serialize};
-use strum_macros::EnumString;
+use strum_macros::{EnumDiscriminants, EnumProperty, EnumString, IntoStaticStr, VariantArray};
 use tracing::level_filters::LevelFilter;
 use tracing::Level;
 use tracing_subscriber::fmt::format::{DefaultFields, Format};
@@ -582,7 +582,8 @@ pub enum TunablesUpdateError {
 }
 
 /// A update for the [`TunableValues`] after invoking the `:set` command.
-#[derive(Debug, PartialEq, Eq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone, EnumDiscriminants)]
+#[strum_discriminants(derive(IntoStaticStr, EnumProperty, VariantArray))]
 pub enum TunablesUpdate {
     // value options
     LogLevel(Level),
@@ -593,14 +594,23 @@ pub enum TunablesUpdate {
     Tabstop(usize),
 
     // bool options
+    #[strum_discriminants(strum(props(is_bool = true)))]
     MessageShortcodeDisplay(bool),
+    #[strum_discriminants(strum(props(is_bool = true)))]
     NormalAfterSend(bool),
+    #[strum_discriminants(strum(props(is_bool = true)))]
     ReactionDisplay(bool),
+    #[strum_discriminants(strum(props(is_bool = true)))]
     ReactionShortcodeDisplay(bool),
+    #[strum_discriminants(strum(props(is_bool = true)))]
     ReadReceiptSend(bool),
+    #[strum_discriminants(strum(props(is_bool = true)))]
     ReadReceiptDisplay(bool),
+    #[strum_discriminants(strum(props(is_bool = true)))]
     TypingNoticeSend(bool),
+    #[strum_discriminants(strum(props(is_bool = true)))]
     TypingNoticeDisplay(bool),
+    #[strum_discriminants(strum(props(is_bool = true)))]
     MessageUserColor(bool),
     // These may need to be adapted
 
