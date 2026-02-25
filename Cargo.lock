@@ -2427,6 +2427,7 @@ dependencies = [
  "ratatui",
  "ratatui-image",
  "regex",
+ "reqwest",
  "rpassword",
  "serde",
  "serde_json",
