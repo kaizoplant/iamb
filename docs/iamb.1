@@ -295,6 +295,17 @@ Produces no effect in
 but will display aliens from Space Invaders in Matrix clients that support doing so.
 .El
 
+.Sh "ENVIRONMENT"
+The behaviour of
+.Nm
+is affected by the following environment variables.
+.Bl -tag -width Ds
+.It Sy "ALL_PROXY, HTTP_PROXY, HTTPS_PROXY"
+Sets the proxy server to use.
+These names also work in lowercase.
+Example:
+.Dq export all_proxy=socks5://localhost:9050 .
+
 .Sh EXAMPLES
 .Ss Example 1: Starting with a specific profile
 To start with a profile named
