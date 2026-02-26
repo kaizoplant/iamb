@@ -1,26 +1,27 @@
 //! Tab completion for iamb
-use std::{borrow::Cow, collections::HashSet, str::FromStr};
+use std::borrow::Cow;
+use std::collections::HashSet;
+use std::ops::Deref;
+use std::str::FromStr;
 
 use matrix_sdk::ruma::RoomId;
-use modalkit::{
-    editing::{
-        completion::{complete_path, Completer},
-        cursor::Cursor,
-        rope::EditRope,
-    },
-    env::vim::command::CommandDescription,
-    prelude::{
-        CommandType,
-        Count,
-        CursorMovements,
-        CursorMovementsContext,
-        MoveDir1D,
-        MoveType,
-        WordStyle,
-    },
+use modalkit::editing::completion::{complete_path, Completer};
+use modalkit::editing::cursor::Cursor;
+use modalkit::editing::rope::EditRope;
+use modalkit::env::vim::command::CommandDescription;
+use modalkit::prelude::{
+    CommandType,
+    Count,
+    CursorMovements,
+    CursorMovementsContext,
+    MoveDir1D,
+    MoveType,
+    WordStyle,
 };
+use strum::{EnumProperty, VariantArray, VariantNames};
 
 use crate::base::{ChatStore, IambBufferId, IambInfo, RoomFocus, MATRIX_ID_WORD};
+use crate::config::{TunablesUpdateDiscriminants, UserDisplayStyle};
 
 mod parse {
     use nom::{
@@ -426,6 +427,51 @@ fn complete_iamb_logout(args: Vec<String>, store: &ChatStore) -> Vec<String> {
     }
 }
 
+/// Tab completion for `:set`
+fn complete_iamb_set(arg: &str) -> Vec<String> {
+    if let Some((orig_option, value)) = arg.split_once('=') {
+        let mut option = orig_option.to_string();
+        option.retain(|c| c != '_');
+
+        match option.as_str() {
+            "loglevel" => {
+                complete_choices(value, &["off", "error", "warn", "info", "debug", "trace"])
+                    .into_iter()
+                    .map(|mut s| {
+                        s.insert(0, '=');
+                        s.insert_str(0, orig_option);
+                        s
+                    })
+                    .collect()
+            },
+            "usernamedisplay" => {
+                complete_choices(value, UserDisplayStyle::VARIANTS)
+                    .into_iter()
+                    .map(|mut s| {
+                        s.insert(0, '=');
+                        s.insert_str(0, orig_option);
+                        s
+                    })
+                    .collect()
+            },
+            _ => vec![],
+        }
+    } else {
+        TunablesUpdateDiscriminants::VARIANTS
+            .iter()
+            .flat_map(|variant| {
+                let name = <_ as Into<&'static str>>::into(variant);
+                if variant.get_bool("is_bool") == Some(true) {
+                    vec![format!("no{name}"), name.to_string()]
+                } else {
+                    vec![name.to_string()]
+                }
+            })
+            .filter(|option| option.starts_with(arg))
+            .collect()
+    }
+}
+
 /// Tab completion for command arguments.
 fn complete_cmdarg(
     desc: CommandDescription,
@@ -497,7 +543,7 @@ fn complete_cmdarg(
 
         "space" => complete_iamb_space(args, store),
 
-        "upload" | "up" | "download" | "d" | "open" | "o" => {
+        "upload" | "up" | "download" | "d" | "open" | "o" | "reload" => {
             if input.get_char_at_cursor(cursor) == Some('"') {
                 // Use the escaped instead of the qouted filename.
                 let mut args = args;
@@ -510,8 +556,7 @@ fn complete_cmdarg(
 
         "logout" => complete_iamb_logout(args, store),
 
-        // This has no arguments
-        "reload" => vec![],
+        "set" => complete_iamb_set(args.last().map(Deref::deref).unwrap_or_default()),
 
         "vertical" | "vert" | "horizontal" | "hor" | "aboveleft" | "lefta" | "leftabove" |
         "abo" | "belowright" | "rightb" | "rightbelow" | "bel" | "tab" => {

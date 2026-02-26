@@ -69,6 +69,7 @@ use ratatui::{
     widgets::Paragraph,
     Terminal,
 };
+use tracing_subscriber::layer::SubscriberExt;
 
 mod base;
 mod commands;
@@ -87,6 +88,8 @@ mod completions;
 mod tests;
 
 use crate::base::RoomView;
+use crate::base::SettingsAction;
+use crate::config::SettingsFile;
 use crate::{
     base::{
         AsyncProgramStore,
@@ -749,6 +752,11 @@ impl Application {
                     return Err(IambError::InvalidUserId(user_id).into());
                 }
             },
+
+            IambAction::Settings(act) => {
+                self.settings_command(act, store)?;
+                None
+            },
         };
 
         Ok(info)
@@ -791,6 +799,30 @@ impl Application {
                     room.forget().await.map_err(IambError::from)?;
                 }
                 Ok(vec![])
+            },
+        }
+    }
+
+    fn settings_command(
+        &mut self,
+        action: SettingsAction,
+        store: &mut ProgramStore,
+    ) -> IambResult<()> {
+        match action {
+            SettingsAction::Set(tunables_updates) => {
+                for update in tunables_updates {
+                    store.application.settings.update(update);
+                }
+                Ok(())
+            },
+            SettingsAction::Reload(path) => {
+                let path = match path {
+                    None => None,
+                    Some(path) if path.ends_with(".json") => Some(SettingsFile::Json(path)),
+                    Some(path) => Some(SettingsFile::Toml(path)),
+                };
+
+                Ok(store.application.settings.reload(path).map_err(IambError::from)?)
             },
         }
     }
@@ -1227,7 +1259,7 @@ fn main() -> IambResult<()> {
     };
 
     // Load configuration and set up the Matrix SDK.
-    let settings = ApplicationSettings::load(iamb).unwrap_or_else(print_exit);
+    let mut settings = ApplicationSettings::load(iamb).unwrap_or_else(print_exit);
 
     // Set umask on Unix platforms so that tokens, keys, etc. are only readable by the user.
     #[cfg(unix)]
@@ -1242,11 +1274,12 @@ fn main() -> IambResult<()> {
     let appender = tracing_appender::rolling::daily(log_dir, log_prefix);
     let (appender, guard) = tracing_appender::non_blocking(appender);
 
-    let subscriber = FmtSubscriber::builder()
-        .with_writer(appender)
-        .with_max_level(settings.tunables.log_level)
-        .finish();
+    let filter = tracing_subscriber::filter::LevelFilter::from_level(settings.tunables.log_level);
+    let (layer, reload_handle) = tracing_subscriber::reload::Layer::new(filter);
+
+    let subscriber = FmtSubscriber::builder().with_writer(appender).finish().with(layer);
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
+    settings.log_level_handle = Some(reload_handle);
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()

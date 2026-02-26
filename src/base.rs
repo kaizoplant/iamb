@@ -8,6 +8,7 @@ use std::convert::TryFrom;
 use std::fmt::{self, Display};
 use std::hash::Hash;
 use std::ops::Deref;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -92,7 +93,13 @@ use modalkit::{
     prelude::{CommandType, WordStyle},
 };
 
-use crate::config::{ImagePreviewProtocolValues, ImagePreviewSize, TunableValues};
+use crate::config::{
+    ImagePreviewProtocolValues,
+    ImagePreviewSize,
+    ReloadError,
+    TunableValues,
+    TunablesUpdate,
+};
 use crate::notifications::NotificationHandle;
 use crate::preview::{source_from_event, PreviewKind, PreviewManager};
 use crate::{
@@ -511,6 +518,16 @@ pub enum KeysAction {
     Import(String, String),
 }
 
+/// An action performed on the application settings.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SettingsAction {
+    /// Change some settings.
+    Set(Vec<TunablesUpdate>),
+
+    /// Reload the (specified) config file.
+    Reload(Option<PathBuf>),
+}
+
 /// An action that the main program loop should execute.
 ///
 /// See [the commands module][super::commands] for where these are usually created.
@@ -527,6 +544,9 @@ pub enum IambAction {
 
     /// Perform an action on the current space.
     Space(SpaceAction),
+
+    /// Perform an action on the application settings.
+    Settings(SettingsAction),
 
     /// Open a URL (and specify whether to join linked matrix rooms).
     OpenLink(String, bool),
@@ -575,6 +595,12 @@ impl From<SpaceAction> for IambAction {
     }
 }
 
+impl From<SettingsAction> for IambAction {
+    fn from(act: SettingsAction) -> Self {
+        IambAction::Settings(act)
+    }
+}
+
 impl From<RoomAction> for IambAction {
     fn from(act: RoomAction) -> Self {
         IambAction::Room(act)
@@ -598,6 +624,7 @@ impl ApplicationAction for IambAction {
             IambAction::Room(..) => SequenceStatus::Break,
             IambAction::OpenLink(..) => SequenceStatus::Break,
             IambAction::Send(..) => SequenceStatus::Break,
+            IambAction::Settings(..) => SequenceStatus::Break,
             IambAction::ToggleScrollbackFocus => SequenceStatus::Break,
             IambAction::Verify(..) => SequenceStatus::Break,
             IambAction::VerifyRequest(..) => SequenceStatus::Break,
@@ -614,6 +641,7 @@ impl ApplicationAction for IambAction {
             IambAction::OpenLink(..) => SequenceStatus::Atom,
             IambAction::Room(..) => SequenceStatus::Atom,
             IambAction::Send(..) => SequenceStatus::Atom,
+            IambAction::Settings(..) => SequenceStatus::Atom,
             IambAction::ToggleScrollbackFocus => SequenceStatus::Atom,
             IambAction::Verify(..) => SequenceStatus::Atom,
             IambAction::VerifyRequest(..) => SequenceStatus::Atom,
@@ -630,6 +658,7 @@ impl ApplicationAction for IambAction {
             IambAction::Room(..) => SequenceStatus::Ignore,
             IambAction::OpenLink(..) => SequenceStatus::Ignore,
             IambAction::Send(..) => SequenceStatus::Ignore,
+            IambAction::Settings(..) => SequenceStatus::Ignore,
             IambAction::ToggleScrollbackFocus => SequenceStatus::Ignore,
             IambAction::Verify(..) => SequenceStatus::Ignore,
             IambAction::VerifyRequest(..) => SequenceStatus::Ignore,
@@ -645,6 +674,7 @@ impl ApplicationAction for IambAction {
             IambAction::Room(..) => false,
             IambAction::Keys(..) => false,
             IambAction::Send(..) => false,
+            IambAction::Settings(..) => false,
             IambAction::OpenLink(..) => false,
             IambAction::ToggleScrollbackFocus => false,
             IambAction::Verify(..) => false,
@@ -820,6 +850,10 @@ pub enum IambError {
     /// A failure while trying to show an image preview.
     #[error("Preview error: {0}")]
     Preview(String),
+
+    /// Config couldn't be reloaded
+    #[error("Reload error: {0}")]
+    ConfigReload(#[from] ReloadError),
 }
 
 impl From<IambError> for UIError<IambInfo> {
