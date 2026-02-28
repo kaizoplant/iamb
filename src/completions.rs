@@ -529,7 +529,7 @@ fn complete_cmdarg(
         "unreads" | "u" => complete_iamb_unreads(args),
 
         // These have no arguments
-        "spaces" | "s" | "welcome" => vec![],
+        "mentions" | "spaces" | "s" | "welcome" => vec![],
 
         "join" if args.len() == 1 => complete_matrix_aliases(&args[0], store),
         "join" => vec![],
@@ -731,6 +731,7 @@ impl Completer<IambInfo> for IambCompleter {
             IambBufferId::Welcome => vec![],
             IambBufferId::ChatList => vec![],
             IambBufferId::UnreadList => vec![],
+            IambBufferId::MentionsList => vec![],
         }
     }
 }

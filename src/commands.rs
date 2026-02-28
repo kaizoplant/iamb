@@ -366,6 +366,16 @@ fn iamb_message(desc: CommandDescription, ctx: &mut ProgContext) -> ProgResult {
 
     return Ok(step);
 }
+fn iamb_mentions(desc: CommandDescription, ctx: &mut ProgContext) -> ProgResult {
+    if !desc.arg.text.is_empty() {
+        return Result::Err(CommandError::InvalidArgument);
+    }
+
+    let open = ctx.switch(OpenTarget::Application(IambId::MentionsList));
+    let step = CommandStep::Continue(open, ctx.context.clone());
+
+    return Ok(step);
+}
 
 fn iamb_spaces(desc: CommandDescription, ctx: &mut ProgContext) -> ProgResult {
     if !desc.arg.text.is_empty() {
@@ -869,6 +879,11 @@ pub fn add_iamb_commands(cmds: &mut ProgramCommands) {
         name: "unreads".into(),
         aliases: vec!["u".into()],
         f: iamb_unreads,
+    });
+    cmds.add_command(ProgramCommand {
+        name: "mentions".into(),
+        aliases: vec![],
+        f: iamb_mentions,
     });
     cmds.add_command(ProgramCommand {
         name: "unreact".into(),
