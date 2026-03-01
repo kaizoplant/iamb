@@ -14,7 +14,8 @@ use humansize::{format_size, DECIMAL};
 use matrix_sdk::ruma::events::receipt::ReceiptThread;
 use matrix_sdk::ruma::events::room::message::RoomMessageEventContentWithoutRelation;
 use matrix_sdk::ruma::events::room::MediaSource;
-use matrix_sdk::ruma::events::Mentions;
+use matrix_sdk::ruma::events::sticker::{RedactedStickerEvent, StickerEvent};
+use matrix_sdk::ruma::events::{Mentions, MessageLikeEvent};
 use matrix_sdk::ruma::room_version_rules::RedactionRules;
 use matrix_sdk::ruma::UserId;
 use ratatui::style::Color;
@@ -26,31 +27,17 @@ use matrix_sdk::ruma::{
         relation::Thread,
         room::{
             encrypted::{
-                OriginalRoomEncryptedEvent,
-                RedactedRoomEncryptedEvent,
-                RoomEncryptedEvent,
+                OriginalRoomEncryptedEvent, RedactedRoomEncryptedEvent, RoomEncryptedEvent,
             },
             message::{
-                FormattedBody,
-                MessageFormat,
-                MessageType,
-                OriginalRoomMessageEvent,
-                RedactedRoomMessageEvent,
-                Relation,
-                RoomMessageEvent,
-                RoomMessageEventContent,
+                FormattedBody, MessageFormat, MessageType, OriginalRoomMessageEvent,
+                RedactedRoomMessageEvent, Relation, RoomMessageEvent, RoomMessageEventContent,
             },
             redaction::SyncRoomRedactionEvent,
         },
-        AnySyncStateEvent,
-        RedactContent,
-        RedactedUnsigned,
+        AnySyncStateEvent, RedactContent, RedactedUnsigned,
     },
-    EventId,
-    MilliSecondsSinceUnixEpoch,
-    OwnedEventId,
-    OwnedUserId,
-    UInt,
+    EventId, MilliSecondsSinceUnixEpoch, OwnedEventId, OwnedUserId, UInt,
 };
 
 use ratatui::{
@@ -471,6 +458,7 @@ pub enum MessageEvent {
     Edit(Box<OriginalRoomMessageEvent>),
     Redacted(Box<RedactedRoomMessageEvent>),
     State(Box<AnySyncStateEvent>),
+    Sticker(Box<StickerEvent>),
     Local(OwnedEventId, Box<RoomMessageEventContent>, MessageEdits),
 }
 
@@ -484,6 +472,7 @@ impl MessageEvent {
             MessageEvent::State(ev) => ev.event_id(),
             MessageEvent::Local(event_id, _, _) => event_id.as_ref(),
             MessageEvent::Edit(ev) => ev.event_id.as_ref(),
+            MessageEvent::Sticker(ev) => ev.event_id(),
         }
     }
 
@@ -494,18 +483,15 @@ impl MessageEvent {
             MessageEvent::Redacted(_) => None,
             MessageEvent::State(_) => None,
             MessageEvent::Edit(_) => None,
-            MessageEvent::Original(ev, edits) => {
-                edits
-                    .last_key_value()
-                    .map(|(_, ev)| &ev.msgtype)
-                    .or(Some(&ev.content.msgtype))
-            },
-            MessageEvent::Local(_, content, edits) => {
-                edits
-                    .last_key_value()
-                    .map(|(_, ev)| &ev.msgtype)
-                    .or(Some(&content.msgtype))
-            },
+            MessageEvent::Original(ev, edits) => edits
+                .last_key_value()
+                .map(|(_, ev)| &ev.msgtype)
+                .or(Some(&ev.content.msgtype)),
+            MessageEvent::Local(_, content, edits) => edits
+                .last_key_value()
+                .map(|(_, ev)| &ev.msgtype)
+                .or(Some(&content.msgtype)),
+            MessageEvent::Sticker(_) => None,
         }
     }
 
@@ -532,6 +518,7 @@ impl MessageEvent {
             },
             MessageEvent::EncryptedRedacted(ev) => body_cow_reason(&ev.unsigned),
             MessageEvent::Redacted(ev) => body_cow_reason(&ev.unsigned),
+            MessageEvent::Sticker(ev) => body_cow_sticker(ev),
             MessageEvent::State(ev) => body_cow_state(ev),
             MessageEvent::Edit(ev) => body_cow_content(&ev.content.msgtype),
         }
@@ -541,43 +528,37 @@ impl MessageEvent {
         let msgtype = match self {
             MessageEvent::EncryptedOriginal(_) => return None,
             MessageEvent::EncryptedRedacted(_) => return None,
-            MessageEvent::Original(ev, edits) => {
-                edits
-                    .last_key_value()
-                    .map(|(_, ev)| &ev.msgtype)
-                    .unwrap_or(&ev.content.msgtype)
-            },
-            MessageEvent::Local(_, content, edits) => {
-                edits
-                    .last_key_value()
-                    .map(|(_, ev)| &ev.msgtype)
-                    .unwrap_or(&content.msgtype)
-            },
+            MessageEvent::Original(ev, edits) => edits
+                .last_key_value()
+                .map(|(_, ev)| &ev.msgtype)
+                .unwrap_or(&ev.content.msgtype),
+            MessageEvent::Local(_, content, edits) => edits
+                .last_key_value()
+                .map(|(_, ev)| &ev.msgtype)
+                .unwrap_or(&content.msgtype),
             MessageEvent::Redacted(_) => return None,
             MessageEvent::State(ev) => return Some(html_state(ev)),
             MessageEvent::Edit(_) => return None,
+            MessageEvent::Sticker(_) => return None,
         };
         content_html(msgtype)
     }
 
     pub fn mentions(&self) -> &Option<Mentions> {
         match self {
-            MessageEvent::EncryptedOriginal(_) |
-            MessageEvent::EncryptedRedacted(_) |
-            MessageEvent::Redacted(_) |
-            MessageEvent::State(_) => &None,
-            MessageEvent::Original(ev, edits) => {
-                edits
-                    .last_key_value()
-                    .map(|(_, edit)| &edit.mentions)
-                    .unwrap_or(&ev.content.mentions)
-            },
-            MessageEvent::Local(_, ev, edits) => {
-                edits
-                    .last_key_value()
-                    .map(|(_, edit)| &edit.mentions)
-                    .unwrap_or(&ev.mentions)
-            },
+            MessageEvent::EncryptedOriginal(_)
+            | MessageEvent::EncryptedRedacted(_)
+            | MessageEvent::Redacted(_)
+            | MessageEvent::Sticker(_)
+            | MessageEvent::State(_) => &None,
+            MessageEvent::Original(ev, edits) => edits
+                .last_key_value()
+                .map(|(_, edit)| &edit.mentions)
+                .unwrap_or(&ev.content.mentions),
+            MessageEvent::Local(_, ev, edits) => edits
+                .last_key_value()
+                .map(|(_, edit)| &edit.mentions)
+                .unwrap_or(&ev.mentions),
             MessageEvent::Edit(ev) => &ev.content.mentions,
         }
     }
@@ -589,6 +570,20 @@ impl MessageEvent {
             MessageEvent::Redacted(_) => return,
             MessageEvent::State(_) => return,
             MessageEvent::Local(_, _, _) => return,
+            MessageEvent::Sticker(ev) => match ev.as_ref() {
+                MessageLikeEvent::Original(sticker) => {
+                    let redacted = RedactedStickerEvent {
+                        content: sticker.content.clone().redact(rules),
+                        event_id: ev.event_id().to_owned(),
+                        sender: ev.sender().to_owned(),
+                        origin_server_ts: ev.origin_server_ts(),
+                        room_id: ev.room_id().to_owned(),
+                        unsigned: redaction_unsigned(redaction),
+                    };
+                    *self = MessageEvent::Sticker(Box::new(MessageLikeEvent::Redacted(redacted)));
+                },
+                MessageLikeEvent::Redacted(_) => {},
+            },
             MessageEvent::Original(ev, _) | MessageEvent::Edit(ev) => {
                 let redacted = RedactedRoomMessageEvent {
                     content: ev.content.clone().redact(rules),
@@ -657,6 +652,15 @@ fn body_cow_content(msgtype: &MessageType) -> Cow<'_, str> {
     };
 
     Cow::Borrowed(s)
+}
+
+fn body_cow_sticker(content: &StickerEvent) -> Cow<'_, str> {
+    match content {
+        MessageLikeEvent::Original(sticker) => {
+            Cow::Owned(format!("* sent a sticker: {}", sticker.content.body))
+        },
+        MessageLikeEvent::Redacted(redacted) => body_cow_reason(&redacted.unsigned),
+    }
 }
 
 fn body_cow_reason(unsigned: &RedactedUnsigned) -> Cow<'_, str> {
@@ -995,6 +999,7 @@ impl Message {
             MessageEvent::Redacted(_) => return None,
             MessageEvent::State(_) => return None,
             MessageEvent::Edit(_) => return None,
+            MessageEvent::Sticker(_) => return None,
         };
 
         match &content.relates_to {
@@ -1017,6 +1022,7 @@ impl Message {
             MessageEvent::Redacted(_) => return None,
             MessageEvent::State(_) => return None,
             MessageEvent::Edit(_) => return None,
+            MessageEvent::Sticker(_) => return None,
         };
 
         match &content.relates_to {
@@ -1063,9 +1069,9 @@ impl Message {
         };
         let user_gutter = tunables.user_gutter_width;
 
-        if user_gutter + TIME_GUTTER + READ_GUTTER + MIN_MSG_LEN <= width &&
-            tunables.read_receipt_display &&
-            tunables.message_time_display
+        if user_gutter + TIME_GUTTER + READ_GUTTER + MIN_MSG_LEN <= width
+            && tunables.read_receipt_display
+            && tunables.message_time_display
         {
             let cols = MessageColumns::Four;
             let fill = width - user_gutter - TIME_GUTTER - READ_GUTTER;
@@ -1090,9 +1096,9 @@ impl Message {
                 read,
                 info,
             }
-        } else if user_gutter + READ_GUTTER + MIN_MSG_LEN <= width &&
-            tunables.read_receipt_display &&
-            !tunables.message_time_display
+        } else if user_gutter + READ_GUTTER + MIN_MSG_LEN <= width
+            && tunables.read_receipt_display
+            && !tunables.message_time_display
         {
             let cols = MessageColumns::Three;
             let fill = width - user_gutter - READ_GUTTER;
@@ -1336,9 +1342,9 @@ impl Message {
         tunables: &'a TunableValues,
     ) -> Option<Span<'a>> {
         if let Some(prev) = prev {
-            if self.sender == prev.sender &&
-                self.timestamp.same_day(&prev.timestamp) &&
-                !self.event.is_emote()
+            if self.sender == prev.sender
+                && self.timestamp.same_day(&prev.timestamp)
+                && !self.event.is_emote()
             {
                 return None;
             }
@@ -1454,6 +1460,16 @@ impl From<AnySyncStateEvent> for Message {
     }
 }
 
+impl From<StickerEvent> for Message {
+    fn from(event: StickerEvent) -> Self {
+        let timestamp = event.origin_server_ts().into();
+        let user_id = event.sender().to_owned();
+        let event = MessageEvent::Sticker(event.into());
+
+        Message::new(event, user_id, timestamp)
+    }
+}
+
 impl Display for Message {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{}", self.event.body())
@@ -1464,13 +1480,8 @@ impl Display for Message {
 pub mod tests {
     use matrix_sdk::ruma::events::room::{
         message::{
-            AudioInfo,
-            AudioMessageEventContent,
-            FileInfo,
-            FileMessageEventContent,
-            ImageMessageEventContent,
-            VideoInfo,
-            VideoMessageEventContent,
+            AudioInfo, AudioMessageEventContent, FileInfo, FileMessageEventContent,
+            ImageMessageEventContent, VideoInfo, VideoMessageEventContent,
         },
         ImageInfo,
     };

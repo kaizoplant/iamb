@@ -266,6 +266,7 @@ impl ChatState {
             MessageAction::Redact(reason, skip_confirm) => {
                 let msg = self.scrollback.get(info).unwrap();
                 msg_redact(msg, &store.application.worker, self.id(), reason, skip_confirm).await
+
             },
             MessageAction::Reply => {
                 self.reply_to = self.scrollback.get_key(info);
@@ -689,6 +690,7 @@ pub async fn msg_react(
         MessageEvent::EncryptedRedacted(ev) => ev.event_id.clone(),
         MessageEvent::Original(ev, _) => ev.event_id.clone(),
         MessageEvent::Local(event_id, _, _) => event_id.clone(),
+        MessageEvent::Sticker(ev) => ev.event_id().to_owned(),
         MessageEvent::State(ev) => ev.event_id().to_owned(),
         MessageEvent::Redacted(_) => {
             let msg = "Cannot react to a redacted message";
@@ -740,6 +742,7 @@ pub async fn msg_redact(
         MessageEvent::EncryptedRedacted(ev) => ev.event_id.clone(),
         MessageEvent::Original(ev, _) => ev.event_id.clone(),
         MessageEvent::Local(event_id, _, _) => event_id.clone(),
+        MessageEvent::Sticker(ev) => ev.event_id().to_owned(),
         MessageEvent::State(ev) => ev.event_id().to_owned(),
         MessageEvent::Edit(ev) => ev.event_id.to_owned(),
         MessageEvent::Redacted(_) => {
@@ -791,6 +794,7 @@ pub async fn msg_unreact(
         MessageEvent::EncryptedRedacted(ev) => ev.event_id.clone(),
         MessageEvent::Original(ev, _) => ev.event_id.clone(),
         MessageEvent::Local(event_id, _, _) => event_id.clone(),
+        MessageEvent::Sticker(ev) => ev.event_id().to_owned(),
         MessageEvent::State(ev) => ev.event_id().to_owned(),
         MessageEvent::Redacted(_) => {
             let msg = "Cannot unreact to a redacted message";

@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 use emojis::Emoji;
 use matrix_sdk::ruma::events::receipt::ReceiptThread;
 use matrix_sdk::ruma::events::room::MediaSource;
+use matrix_sdk::ruma::events::sticker::StickerEvent;
 use matrix_sdk::ruma::room_version_rules::RedactionRules;
 use matrix_sdk::ruma::OwnedMxcUri;
 use matrix_sdk::ruma::OwnedRoomAliasId;
@@ -26,12 +27,7 @@ use ratatui::{
 };
 use ratatui_image::picker::{Picker, ProtocolType};
 use serde::{
-    de::Error as SerdeError,
-    de::Visitor,
-    Deserialize,
-    Deserializer,
-    Serialize,
-    Serializer,
+    de::Error as SerdeError, de::Visitor, Deserialize, Deserializer, Serialize, Serializer,
 };
 use smallvec::SmallVec;
 use tokio::sync::Mutex as AsyncMutex;
@@ -46,24 +42,15 @@ use matrix_sdk::{
             relation::{Replacement, Thread},
             room::encrypted::RoomEncryptedEvent,
             room::message::{
-                OriginalRoomMessageEvent,
-                Relation,
-                RoomMessageEvent,
-                RoomMessageEventContent,
+                OriginalRoomMessageEvent, Relation, RoomMessageEvent, RoomMessageEventContent,
                 RoomMessageEventContentWithoutRelation,
             },
             room::redaction::{OriginalSyncRoomRedactionEvent, SyncRoomRedactionEvent},
             tag::{TagName, Tags},
-            AnySyncStateEvent,
-            MessageLikeEvent,
+            AnySyncStateEvent, MessageLikeEvent,
         },
         presence::PresenceState,
-        EventId,
-        OwnedEventId,
-        OwnedRoomId,
-        OwnedUserId,
-        RoomId,
-        UserId,
+        EventId, OwnedEventId, OwnedRoomId, OwnedUserId, RoomId, UserId,
     },
     RoomState as MatrixRoomState,
 };
@@ -72,12 +59,8 @@ use modalkit::{
     actions::Action,
     editing::{
         application::{
-            ApplicationAction,
-            ApplicationContentId,
-            ApplicationError,
-            ApplicationInfo,
-            ApplicationStore,
-            ApplicationWindowId,
+            ApplicationAction, ApplicationContentId, ApplicationError, ApplicationInfo,
+            ApplicationStore, ApplicationWindowId,
         },
         completion::CompletionMap,
         context::EditContext,
@@ -94,11 +77,7 @@ use modalkit::{
 };
 
 use crate::config::{
-    ImagePreviewProtocolValues,
-    ImagePreviewSize,
-    ReloadError,
-    TunableValues,
-    TunablesUpdate,
+    ImagePreviewProtocolValues, ImagePreviewSize, ReloadError, TunableValues, TunablesUpdate,
 };
 use crate::notifications::NotificationHandle;
 use crate::preview::{source_from_event, PreviewKind, PreviewManager};
@@ -117,10 +96,10 @@ pub const MATRIX_ID_WORD: WordStyle = WordStyle::CharSet(is_mxid_char);
 /// in the server name, but in practice that should be uncommon, and people
 /// can just use `gf` and friends in Visual mode instead.
 fn is_mxid_char(c: char) -> bool {
-    return c >= 'a' && c <= 'z' ||
-        c >= 'A' && c <= 'Z' ||
-        c >= '0' && c <= '9' ||
-        ":-./@_#!".contains(c);
+    return c >= 'a' && c <= 'z'
+        || c >= 'A' && c <= 'Z'
+        || c >= '0' && c <= '9'
+        || ":-./@_#!".contains(c);
 }
 
 const ROOM_FETCH_DEBOUNCE: Duration = Duration::from_secs(2);
@@ -895,14 +874,16 @@ pub enum EventLocation {
 
     /// The [EventId] belongs to an edit for the given event and has key [MessageKey].
     Edit(OwnedEventId, MessageKey),
+    /// The [EventId] belongs to a sticker event in the main scrollback
+    Sticker(MessageKey),
 }
 
 impl EventLocation {
     fn to_message_key(&self) -> Option<&MessageKey> {
-        if let EventLocation::Message(_, key) = self {
-            Some(key)
-        } else {
-            None
+        match self {
+            EventLocation::Message(_, key) => Some(key),
+            EventLocation::Sticker(key) => Some(key),
+            _ => None,
         }
     }
 }
@@ -1105,6 +1086,7 @@ impl RoomInfo {
         let (thread_root, key) = match self.keys.get(event_id)? {
             EventLocation::Message(thread_root, key) => (thread_root, key),
             EventLocation::State(key) => (&None, key),
+            EventLocation::Sticker(key) => (&None, key),
             _ => return None,
         };
 
@@ -1168,6 +1150,12 @@ impl RoomInfo {
 
                 self.keys.remove(redacts);
             },
+            Some(EventLocation::Sticker(key)) => {
+                if let Some(msg) = self.messages.get_mut(key) {
+                    let ev = SyncRoomRedactionEvent::Original(ev);
+                    msg.redact(ev, rules);
+                }
+            },
         }
     }
 
@@ -1212,6 +1200,46 @@ impl RoomInfo {
         if let (Some(source), Some(_)) = (source, &settings.tunables.image_preview) {
             let size = ImagePreviewSize { width: 2, height: 1 };
             previews.register_preview(settings, source, PreviewKind::Reaction, size, worker);
+        }
+    }
+
+    /// Insert a sticker
+    pub fn insert_sticker(
+        &mut self,
+        sticker: StickerEvent,
+        settings: &ApplicationSettings,
+        previews: &mut PreviewManager,
+        worker: &Requester,
+    ) {
+        match sticker {
+            MessageLikeEvent::Original(ref sticker_content) => {
+                let key =
+                    (sticker_content.origin_server_ts.into(), sticker_content.event_id.clone());
+
+                let loc = EventLocation::Sticker(key.clone());
+                let source = sticker_content.content.source.clone();
+
+                self.keys.insert(sticker_content.event_id.clone(), loc);
+                self.messages.insert_message(key.clone(), sticker.clone());
+
+                if let (Some(msg), Some(image_preview)) = (
+                    self.get_event_mut(&sticker_content.event_id),
+                    &settings.tunables.image_preview,
+                ) {
+                    msg.image_preview = Some(source.clone().into());
+                    previews.register_preview(
+                        settings,
+                        source.into(),
+                        PreviewKind::Message,
+                        image_preview.size,
+                        worker,
+                    )
+                }
+            },
+            MessageLikeEvent::Redacted(ref redaction) => {
+                let key = (redaction.origin_server_ts.into(), redaction.event_id.clone());
+                self.messages.insert_message(key.clone(), sticker.clone());
+            },
         }
     }
 
@@ -1314,25 +1342,23 @@ impl RoomInfo {
             RoomMessageEvent::Original(OriginalRoomMessageEvent {
                 content: RoomMessageEventContent { relates_to: Some(ref relates_to), .. },
                 ..
-            }) => {
-                match relates_to {
-                    Relation::Replacement(repl) => {
-                        let repl = repl.clone();
-                        self.insert_edit(msg, repl)
-                    },
-                    Relation::Thread(Thread { event_id, .. }) => {
-                        let event_id = event_id.clone();
-                        self.insert_thread(msg, event_id);
-                    },
-                    Relation::Reply { in_reply_to } => {
-                        if self.get_message_key(&in_reply_to.event_id).is_none() {
-                            need_load
-                                .need_event(msg.room_id().to_owned(), in_reply_to.event_id.clone());
-                        }
-                        self.insert_message(msg)
-                    },
-                    _ => self.insert_message(msg),
-                }
+            }) => match relates_to {
+                Relation::Replacement(repl) => {
+                    let repl = repl.clone();
+                    self.insert_edit(msg, repl)
+                },
+                Relation::Thread(Thread { event_id, .. }) => {
+                    let event_id = event_id.clone();
+                    self.insert_thread(msg, event_id);
+                },
+                Relation::Reply { in_reply_to } => {
+                    if self.get_message_key(&in_reply_to.event_id).is_none() {
+                        need_load
+                            .need_event(msg.room_id().to_owned(), in_reply_to.event_id.clone());
+                    }
+                    self.insert_message(msg)
+                },
+                _ => self.insert_message(msg),
             },
             _ => self.insert_message(msg),
         }
@@ -1420,11 +1446,11 @@ impl RoomInfo {
             .filter(|(_, msg)| {
                 matches!(
                     msg.event,
-                    MessageEvent::EncryptedOriginal(_) |
-                        MessageEvent::Edit(_) |
-                        MessageEvent::EncryptedRedacted(_) |
-                        MessageEvent::Original(_, _) |
-                        MessageEvent::Redacted(_)
+                    MessageEvent::EncryptedOriginal(_)
+                        | MessageEvent::Edit(_)
+                        | MessageEvent::EncryptedRedacted(_)
+                        | MessageEvent::Original(_, _)
+                        | MessageEvent::Redacted(_)
                 )
             })
             .map(|(_, msg)| msg.event.event_id().to_owned())
@@ -2179,10 +2205,7 @@ pub mod tests {
     use crate::tests::*;
     use matrix_sdk::ruma::{
         events::{reaction::ReactionEventContent, relation::Annotation, MessageLikeUnsigned},
-        owned_event_id,
-        owned_room_id,
-        owned_user_id,
-        MilliSecondsSinceUnixEpoch,
+        owned_event_id, owned_room_id, owned_user_id, MilliSecondsSinceUnixEpoch,
     };
     use pretty_assertions::assert_eq;
     use ratatui::style::Color;
@@ -2251,13 +2274,19 @@ pub mod tests {
             .into_iter()
             .map(|(key, count, _)| (key, count))
             .collect();
-        assert_eq!(reacts, vec![
-            ("🏠", vec![owned_user_id!("@foo:example.org").deref()]),
-            ("🙂", vec![
-                owned_user_id!("@bar:example.org").deref(),
-                owned_user_id!("@foo:example.org").deref(),
-            ])
-        ]);
+        assert_eq!(
+            reacts,
+            vec![
+                ("🏠", vec![owned_user_id!("@foo:example.org").deref()]),
+                (
+                    "🙂",
+                    vec![
+                        owned_user_id!("@bar:example.org").deref(),
+                        owned_user_id!("@foo:example.org").deref(),
+                    ]
+                )
+            ]
+        );
     }
 
     #[test]
@@ -2348,13 +2377,16 @@ pub mod tests {
         need_load.need_members(room_id.clone());
         need_load.need_event(room_id.clone(), event_id.clone());
 
-        assert_eq!(need_load.into_iter().collect::<Vec<(OwnedRoomId, Need)>>(), vec![(
-            room_id,
-            Need {
-                members: true,
-                messages: Some(Vec::new()),
-                events: vec![event_id]
-            }
-        )],);
+        assert_eq!(
+            need_load.into_iter().collect::<Vec<(OwnedRoomId, Need)>>(),
+            vec![(
+                room_id,
+                Need {
+                    members: true,
+                    messages: Some(Vec::new()),
+                    events: vec![event_id]
+                }
+            )],
+        );
     }
 }

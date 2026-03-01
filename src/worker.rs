@@ -16,6 +16,7 @@ use futures::{stream::FuturesUnordered, StreamExt};
 use gethostname::gethostname;
 use matrix_sdk::deserialized_responses::{TimelineEvent, TimelineEventKind};
 use matrix_sdk::ruma::events::room::MediaSource;
+use matrix_sdk::ruma::events::sticker::StickerEventContent;
 use matrix_sdk::ruma::OwnedRoomAliasId;
 use matrix_sdk::OwnedServerName;
 use ratatui_image::picker::Picker;
@@ -374,6 +375,9 @@ fn load_insert(
                     },
                     AnyTimelineEvent::MessageLike(AnyMessageLikeEvent::Reaction(ev)) => {
                         info.insert_reaction_with_preview(ev, settings, previews, worker);
+                    },
+                    AnyTimelineEvent::MessageLike(AnyMessageLikeEvent::Sticker(ev)) => {
+                        info.insert_sticker(ev, settings, previews, worker);
                     },
                     AnyTimelineEvent::MessageLike(_) => {
                         continue;
@@ -1264,6 +1268,31 @@ impl ClientWorker {
                         previews,
                         worker,
                     );
+                }
+            },
+        );
+
+        let _ = self.client.add_event_handler(
+            |ev: SyncMessageLikeEvent<StickerEventContent>,
+             room: MatrixRoom,
+             store: Ctx<AsyncProgramStore>| {
+                async move {
+                    let room_id = room.room_id();
+
+                    let mut locked = store.lock().await;
+
+                    let sender = ev.sender().to_owned();
+                    let _ = locked.application.presences.get_or_default(sender);
+
+                    let ChatStore { rooms, previews, settings, worker, .. } =
+                        &mut locked.application;
+
+                    let info = rooms.get_or_default(room_id.to_owned());
+
+                    update_event_receipts(info, &room, ev.event_id()).await;
+
+                    let full_ev = ev.into_full_event(room_id.to_owned());
+                    info.insert_sticker(full_ev, settings, previews, worker);
                 }
             },
         );
