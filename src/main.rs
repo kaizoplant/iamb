@@ -15,6 +15,7 @@
 #![allow(clippy::needless_return)]
 #![allow(clippy::result_large_err)]
 #![allow(clippy::bool_assert_comparison)]
+#![recursion_limit = "256"]
 use std::collections::VecDeque;
 use std::convert::TryFrom;
 use std::fmt::Display;
