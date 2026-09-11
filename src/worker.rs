@@ -2,118 +2,81 @@
 //!
 //! The worker thread handles asynchronous work, and can receive messages from the main thread that
 //! block on a reply from the async worker.
-use std::collections::HashMap;
-use std::convert::TryFrom;
+
 use std::fmt::{Debug, Formatter};
-use std::ops::DerefMut;
-use std::str::FromStr;
-use std::sync::Arc;
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
-use std::time::{Duration, Instant};
 
-use futures::{StreamExt, stream::FuturesUnordered};
+use futures::StreamExt;
+use futures::stream::FuturesUnordered;
 use gethostname::gethostname;
-use matrix_sdk::ruma::events::AnyMessageLikeEventContent;
-use matrix_sdk::ruma::events::relation::Thread;
-use matrix_sdk::ruma::events::room::MediaSource;
-use matrix_sdk::ruma::events::room::message::Relation;
+use matrix_sdk::authentication::matrix::MatrixSession;
+use matrix_sdk::config::{RequestConfig, SyncSettings};
+use matrix_sdk::encryption::{BackupDownloadStrategy, EncryptionSettings};
+use matrix_sdk::event_handler::Ctx;
+use matrix_sdk::room::{Messages as MatrixMessages, MessagesOptions, RoomMember};
+use matrix_sdk::ruma::api::client::filter::{
+    FilterDefinition,
+    LazyLoadOptions,
+    RoomEventFilter,
+    RoomFilter,
+};
+use matrix_sdk::ruma::api::client::room::Visibility;
+use matrix_sdk::ruma::api::client::room::create_room::v3::{
+    CreationContent,
+    Request as CreateRoomRequest,
+};
+use matrix_sdk::ruma::api::client::space::get_hierarchy::v1::Request as SpaceHierarchyRequest;
+use matrix_sdk::ruma::assign;
+use matrix_sdk::ruma::events::key::verification::ready::{
+    OriginalSyncKeyVerificationReadyEvent,
+    ToDeviceKeyVerificationReadyEvent,
+};
+use matrix_sdk::ruma::events::key::verification::request::ToDeviceKeyVerificationRequestEvent;
+use matrix_sdk::ruma::events::key::verification::start::{
+    OriginalSyncKeyVerificationStartEvent,
+    ToDeviceKeyVerificationStartEvent,
+};
+use matrix_sdk::ruma::events::presence::PresenceEvent;
+use matrix_sdk::ruma::events::reaction::ReactionEventContent;
+use matrix_sdk::ruma::events::receipt::{ReceiptEventContent, ReceiptType};
+use matrix_sdk::ruma::events::room::encryption::RoomEncryptionEventContent;
+use matrix_sdk::ruma::events::room::member::OriginalSyncRoomMemberEvent;
+use matrix_sdk::ruma::events::room::name::RoomNameEventContent;
+use matrix_sdk::ruma::events::room::redaction::OriginalSyncRoomRedactionEvent;
 use matrix_sdk::ruma::events::sticker::StickerEventContent;
+use matrix_sdk::ruma::events::typing::SyncTypingEvent;
+use matrix_sdk::ruma::events::{
+    AnyMessageLikeEvent,
+    AnyMessageLikeEventContent,
+    AnyTimelineEvent,
+    InitialStateEvent,
+    SyncEphemeralRoomEvent,
+    SyncMessageLikeEvent,
+    SyncStateEvent,
+};
+use matrix_sdk::ruma::room::RoomType;
+use matrix_sdk::ruma::serde::Raw;
 use matrix_sdk::send_queue::{LocalEcho, LocalEchoContent, RoomSendQueueUpdate, SendQueueUpdate};
-use ratatui_image::picker::Picker;
-use tokio::sync::Semaphore;
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
-use tokio::task::JoinHandle;
-use tracing::{error, warn};
-use url::Url;
-
 use matrix_sdk::{
-    Client,
     ClientBuildError,
     Error as MatrixError,
     RoomDisplayName,
     RoomMemberships,
-    authentication::matrix::MatrixSession,
-    config::{RequestConfig, SyncSettings},
-    encryption::{
-        BackupDownloadStrategy,
-        EncryptionSettings,
-        verification::{SasVerification, Verification},
-    },
-    event_handler::Ctx,
     reqwest,
-    room::{Messages, MessagesOptions, Room as MatrixRoom, RoomMember},
-    ruma::{
-        EventId,
-        OwnedEventId,
-        OwnedRoomId,
-        OwnedRoomOrAliasId,
-        OwnedUserId,
-        RoomId,
-        api::client::{
-            filter::{FilterDefinition, LazyLoadOptions, RoomEventFilter, RoomFilter},
-            room::{
-                Visibility,
-                create_room::v3::{CreationContent, Request as CreateRoomRequest},
-            },
-            space::get_hierarchy::v1::Request as SpaceHierarchyRequest,
-        },
-        assign,
-        events::{
-            AnyMessageLikeEvent,
-            AnySyncStateEvent,
-            AnyTimelineEvent,
-            InitialStateEvent,
-            SyncEphemeralRoomEvent,
-            SyncMessageLikeEvent,
-            SyncStateEvent,
-            key::verification::{
-                VerificationMethod,
-                done::{OriginalSyncKeyVerificationDoneEvent, ToDeviceKeyVerificationDoneEvent},
-                key::{OriginalSyncKeyVerificationKeyEvent, ToDeviceKeyVerificationKeyEvent},
-                request::ToDeviceKeyVerificationRequestEvent,
-                start::{OriginalSyncKeyVerificationStartEvent, ToDeviceKeyVerificationStartEvent},
-            },
-            presence::PresenceEvent,
-            reaction::ReactionEventContent,
-            receipt::{ReceiptEventContent, ReceiptThread, ReceiptType},
-            room::{
-                encryption::RoomEncryptionEventContent,
-                member::OriginalSyncRoomMemberEvent,
-                message::{MessageType, RoomMessageEventContent},
-                name::RoomNameEventContent,
-                redaction::OriginalSyncRoomRedactionEvent,
-            },
-            tag::Tags,
-            typing::SyncTypingEvent,
-        },
-        room::RoomType,
-        serde::Raw,
-    },
 };
+use matrix_sdk_base::RoomStateFilter;
+use ratatui_image::picker::Picker;
+use tokio::sync::Semaphore;
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+use tokio::task::JoinHandle;
+use tracing::{Instrument as _, error, warn};
 
-use modalkit::errors::UIError;
-use modalkit::prelude::{EditInfo, InfoMessage};
-
-use crate::base::{EchoLocation, MessageNeed};
-use crate::config::{ImagePreviewSize, ProxyUrl};
-use crate::message::{Message, MessageEvent, MessageId, MessageKey};
+use crate::base::{CreateRoomFlags, CreateRoomType, EchoLocation, MessageNeed, RoomFetchStatus};
+use crate::config::ProxyUrl;
+use crate::message::MessageId;
 use crate::notifications::register_notifications;
-use crate::preview::PreviewKind;
-use crate::{
-    ApplicationSettings,
-    base::{
-        AsyncProgramStore,
-        ChatStore,
-        CreateRoomFlags,
-        CreateRoomType,
-        IambError,
-        IambResult,
-        ProgramStore,
-        RoomFetchStatus,
-        RoomInfo,
-        VerifyAction,
-    },
-};
+use crate::prelude::*;
+use crate::verifications;
 
 const DEFAULT_ENCRYPTION_SETTINGS: EncryptionSettings = EncryptionSettings {
     auto_enable_cross_signing: true,
@@ -267,7 +230,8 @@ async fn load_older_one(
         };
         opts.limit = limit.into();
 
-        let Messages { end, chunk, .. } = room.messages(opts).await.map_err(IambError::from)?;
+        let MatrixMessages { end, chunk, .. } =
+            room.messages(opts).await.map_err(IambError::from)?;
 
         let mut msgs = vec![];
 
@@ -329,7 +293,7 @@ fn load_insert(
                         info.insert_reaction_with_preview(ev, settings, previews, worker);
                     },
                     AnyTimelineEvent::MessageLike(AnyMessageLikeEvent::Sticker(ev)) => {
-                        info.insert_sticker(ev, settings, previews, worker);
+                        info.insert_sticker_with_preview(ev, settings, previews, worker);
                     },
                     AnyTimelineEvent::MessageLike(_) => {
                         continue;
@@ -424,15 +388,30 @@ async fn load_older_forever(client: &Client, store: &AsyncProgramStore) {
     }
 }
 
-async fn refresh_rooms(client: &Client, store: &AsyncProgramStore) {
+async fn refresh_rooms(client: &Client, store: &AsyncProgramStore, first_sync: bool) {
     let mut names = vec![];
 
     let mut spaces = vec![];
     let mut rooms = vec![];
     let mut dms = vec![];
 
-    for room in client.invited_rooms().into_iter().chain(client.joined_rooms().into_iter()) {
-        let name = room.cached_display_name().unwrap_or(RoomDisplayName::Empty).to_string();
+    let iter = client.rooms_filtered(
+        RoomStateFilter::JOINED | RoomStateFilter::INVITED | RoomStateFilter::KNOCKED,
+    );
+
+    for room in iter {
+        let display = if let Some(name) = room.cached_display_name() {
+            name
+        } else if !first_sync && let Ok(name) = room.display_name().await {
+            // If we are not trying to fill out the SyncInfo during startup,
+            // then we can take our time here and force room information
+            // to be loaded.
+            name
+        } else {
+            RoomDisplayName::Empty
+        };
+
+        let name = display.to_string();
         let tags = room.tags().await.unwrap_or_default();
 
         names.push((room.room_id().to_owned(), name));
@@ -460,7 +439,7 @@ async fn refresh_rooms_forever(client: &Client, store: &AsyncProgramStore) {
     let mut interval = tokio::time::interval(Duration::from_secs(5));
 
     loop {
-        refresh_rooms(client, store).await;
+        refresh_rooms(client, store, false).await;
         interval.tick().await;
     }
 }
@@ -663,7 +642,7 @@ pub async fn do_first_sync(client: &Client, store: &AsyncProgramStore) -> Result
     client.send_queue().respawn_tasks_for_rooms_with_unsent_requests().await;
 
     // Populate sync_info with our initial set of rooms/dms/spaces.
-    refresh_rooms(client, store).await;
+    refresh_rooms(client, store, true).await;
 
     // Insert Need::Messages to fetch accurate recent timestamps in the background.
     let mut locked = store.lock().await;
@@ -724,9 +703,7 @@ pub enum WorkerTask {
     Members(OwnedRoomId, ClientReply<IambResult<Vec<RoomMember>>>),
     SpaceMembers(OwnedRoomId, ClientReply<IambResult<Vec<OwnedRoomId>>>),
     TypingNotice(OwnedRoomId),
-    Verify(VerifyAction, SasVerification, ClientReply<IambResult<EditInfo>>),
-    VerifyRequest(OwnedUserId, ClientReply<IambResult<EditInfo>>),
-    LoadImage(MediaSource, PreviewKind, ImagePreviewSize, Arc<Picker>, Arc<Semaphore>),
+    LoadImage(MediaSource, PreviewKind, Size, Arc<Picker>, Arc<Semaphore>),
 }
 
 impl Debug for WorkerTask {
@@ -776,19 +753,6 @@ impl Debug for WorkerTask {
             },
             WorkerTask::TypingNotice(room_id) => {
                 f.debug_tuple("WorkerTask::TypingNotice").field(room_id).finish()
-            },
-            WorkerTask::Verify(act, sasv1, _) => {
-                f.debug_tuple("WorkerTask::Verify")
-                    .field(act)
-                    .field(sasv1)
-                    .field(&format_args!("_"))
-                    .finish()
-            },
-            WorkerTask::VerifyRequest(user_id, _) => {
-                f.debug_tuple("WorkerTask::VerifyRequest")
-                    .field(user_id)
-                    .field(&format_args!("_"))
-                    .finish()
             },
             WorkerTask::LoadImage(source, kind, size, _, _) => {
                 f.debug_tuple("WorkerTask::RenderImage")
@@ -969,27 +933,11 @@ impl Requester {
         self.tx.send(WorkerTask::TypingNotice(room_id)).unwrap();
     }
 
-    pub fn verify(&self, act: VerifyAction, sas: SasVerification) -> IambResult<EditInfo> {
-        let (reply, response) = oneshot();
-
-        self.tx.send(WorkerTask::Verify(act, sas, reply)).unwrap();
-
-        return response.recv();
-    }
-
-    pub fn verify_request(&self, user_id: OwnedUserId) -> IambResult<EditInfo> {
-        let (reply, response) = oneshot();
-
-        self.tx.send(WorkerTask::VerifyRequest(user_id, reply)).unwrap();
-
-        return response.recv();
-    }
-
     pub fn load_image(
         &self,
         source: MediaSource,
         kind: PreviewKind,
-        size: ImagePreviewSize,
+        size: Size,
         picker: Arc<Picker>,
         permits: Arc<Semaphore>,
     ) {
@@ -1086,14 +1034,6 @@ impl ClientWorker {
                 assert!(self.initialized);
                 self.typing_notice(room_id).await;
             },
-            WorkerTask::Verify(act, sas, reply) => {
-                assert!(self.initialized);
-                reply.send(self.verify(act, sas).await);
-            },
-            WorkerTask::VerifyRequest(user_id, reply) => {
-                assert!(self.initialized);
-                reply.send(self.verify_request(user_id).await);
-            },
             WorkerTask::LoadImage(source, kind, size, picker, permits) => {
                 assert!(self.initialized);
                 tokio::spawn(crate::preview::load_image(
@@ -1164,13 +1104,16 @@ impl ClientWorker {
                     let room_id = room.room_id();
 
                     if let Some(msg) = ev.as_original() &&
-                        let MessageType::VerificationRequest(_) = msg.content.msgtype &&
-                        let Some(request) = client
-                            .encryption()
-                            .get_verification_request(ev.sender(), ev.event_id())
-                            .await
+                        let MessageType::VerificationRequest(content) = &msg.content.msgtype
                     {
-                        request.accept().await.expect("Failed to accept request");
+                        verifications::handle_request(
+                            ev.event_id().into(),
+                            ev.sender().into(),
+                            content.from_device.clone(),
+                            client.clone(),
+                            Arc::clone(&store.0),
+                        )
+                        .await
                     }
 
                     let mut locked = store.lock().await;
@@ -1238,7 +1181,7 @@ impl ClientWorker {
                     update_event_receipts(info, &room, ev.event_id()).await;
 
                     let full_ev = ev.into_full_event(room_id.to_owned());
-                    info.insert_sticker(full_ev, settings, previews, worker);
+                    info.insert_sticker_with_preview(full_ev, settings, previews, worker);
                 }
             },
         );
@@ -1311,115 +1254,93 @@ impl ClientWorker {
         );
 
         let _ = self.client.add_event_handler(
-            |ev: OriginalSyncKeyVerificationStartEvent,
+            |ev: ToDeviceKeyVerificationRequestEvent,
              client: Client,
              store: Ctx<AsyncProgramStore>| {
-                async move {
-                    let tx_id = ev.content.relates_to.event_id.as_ref();
-
-                    if let Some(Verification::SasV1(sas)) =
-                        client.encryption().get_verification(&ev.sender, tx_id).await
-                    {
-                        sas.accept().await.unwrap();
-
-                        store.lock().await.application.insert_sas(sas)
-                    }
-                }
+                let span = tracing::info_span!(
+                    "to_device_verify_request",
+                    other_user_id = ?ev.sender,
+                    other_device_id = ?ev.content.from_device,
+                    flow_id = ?ev.content.transaction_id,
+                );
+                verifications::handle_request(
+                    ev.content.transaction_id.into(),
+                    ev.sender,
+                    ev.content.from_device,
+                    client,
+                    store.0,
+                )
+                .instrument(span)
             },
         );
 
         let _ = self.client.add_event_handler(
-            |ev: OriginalSyncKeyVerificationKeyEvent,
+            |ev: ToDeviceKeyVerificationReadyEvent,
              client: Client,
              store: Ctx<AsyncProgramStore>| {
-                async move {
-                    let tx_id = ev.content.relates_to.event_id.as_ref();
-
-                    if let Some(Verification::SasV1(sas)) =
-                        client.encryption().get_verification(&ev.sender, tx_id).await
-                    {
-                        store.lock().await.application.insert_sas(sas);
-                    }
-                }
+                let span = tracing::info_span!(
+                    "to_device_verify_ready",
+                    other_user_id = ?ev.sender,
+                    other_device_id = ?ev.content.from_device,
+                    flow_id = ?ev.content.transaction_id,
+                );
+                verifications::handle_ready(
+                    ev.content.transaction_id.into(),
+                    ev.sender,
+                    client,
+                    store.0,
+                )
+                .instrument(span)
             },
         );
 
         let _ = self.client.add_event_handler(
-            |ev: OriginalSyncKeyVerificationDoneEvent,
+            |ev: OriginalSyncKeyVerificationReadyEvent,
              client: Client,
              store: Ctx<AsyncProgramStore>| {
-                async move {
-                    let tx_id = ev.content.relates_to.event_id.as_ref();
-
-                    if let Some(Verification::SasV1(sas)) =
-                        client.encryption().get_verification(&ev.sender, tx_id).await
-                    {
-                        store.lock().await.application.insert_sas(sas);
-                    }
-                }
+                let span = tracing::info_span!(
+                    "room_verify_ready",
+                    other_user_id = ?ev.sender,
+                    other_device_id = ?ev.content.from_device,
+                    flow_id = ?ev.content.relates_to.event_id,
+                );
+                verifications::handle_ready(
+                    ev.content.relates_to.event_id.into(),
+                    ev.sender,
+                    client,
+                    store.0,
+                )
+                .instrument(span)
             },
         );
 
         let _ = self.client.add_event_handler(
-            |ev: ToDeviceKeyVerificationRequestEvent, client: Client| {
-                async move {
-                    let request = client
-                        .encryption()
-                        .get_verification_request(&ev.sender, &ev.content.transaction_id)
-                        .await;
-
-                    if let Some(request) = request {
-                        request.accept().await.unwrap();
-                    }
-                }
+            |ev: ToDeviceKeyVerificationStartEvent, client: Client| {
+                let span = tracing::info_span!(
+                    "to_device_verify_start",
+                    other_user_id = ?ev.sender,
+                    other_device_id = ?ev.content.from_device,
+                    flow_id = ?ev.content.transaction_id,
+                );
+                verifications::handle_start(ev.content.transaction_id.into(), ev.sender, client)
+                    .instrument(span)
             },
         );
 
         let _ = self.client.add_event_handler(
-            |ev: ToDeviceKeyVerificationStartEvent,
-             client: Client,
-             store: Ctx<AsyncProgramStore>| {
-                async move {
-                    let tx_id = ev.content.transaction_id;
-
-                    if let Some(Verification::SasV1(sas)) =
-                        client.encryption().get_verification(&ev.sender, tx_id.as_ref()).await
-                    {
-                        sas.accept().await.unwrap();
-
-                        store.lock().await.application.insert_sas(sas);
-                    }
-                }
-            },
-        );
-
-        let _ = self.client.add_event_handler(
-            |ev: ToDeviceKeyVerificationKeyEvent, client: Client, store: Ctx<AsyncProgramStore>| {
-                async move {
-                    let tx_id = ev.content.transaction_id;
-
-                    if let Some(Verification::SasV1(sas)) =
-                        client.encryption().get_verification(&ev.sender, tx_id.as_ref()).await
-                    {
-                        store.lock().await.application.insert_sas(sas);
-                    }
-                }
-            },
-        );
-
-        let _ = self.client.add_event_handler(
-            |ev: ToDeviceKeyVerificationDoneEvent,
-             client: Client,
-             store: Ctx<AsyncProgramStore>| {
-                async move {
-                    let tx_id = ev.content.transaction_id;
-
-                    if let Some(Verification::SasV1(sas)) =
-                        client.encryption().get_verification(&ev.sender, tx_id.as_ref()).await
-                    {
-                        store.lock().await.application.insert_sas(sas);
-                    }
-                }
+            |ev: OriginalSyncKeyVerificationStartEvent, client: Client| {
+                let span = tracing::info_span!(
+                    "room_verify_start",
+                    other_user_id = ?ev.sender,
+                    other_device_id = ?ev.content.from_device,
+                    flow_id = ?ev.content.relates_to.event_id
+                );
+                verifications::handle_start(
+                    ev.content.relates_to.event_id.into(),
+                    ev.sender,
+                    client,
+                )
+                .instrument(span)
             },
         );
 
@@ -1587,7 +1508,10 @@ impl ClientWorker {
 
     async fn members(&mut self, room_id: OwnedRoomId) -> IambResult<Vec<RoomMember>> {
         if let Some(room) = self.client.get_room(room_id.as_ref()) {
-            Ok(room.members(RoomMemberships::ACTIVE).await.map_err(IambError::from)?)
+            Ok(room
+                .members(RoomMemberships::ACTIVE | RoomMemberships::KNOCK)
+                .await
+                .map_err(IambError::from)?)
         } else {
             Err(IambError::UnknownRoom(room_id).into())
         }
@@ -1608,73 +1532,6 @@ impl ClientWorker {
     async fn typing_notice(&mut self, room_id: OwnedRoomId) {
         if let Some(room) = self.client.get_room(room_id.as_ref()) {
             let _ = room.typing_notice(true).await;
-        }
-    }
-
-    async fn verify(&self, action: VerifyAction, sas: SasVerification) -> IambResult<EditInfo> {
-        match action {
-            VerifyAction::Accept => {
-                sas.accept().await.map_err(IambError::from)?;
-
-                Ok(Some(InfoMessage::from("Accepted verification request")))
-            },
-            VerifyAction::Confirm => {
-                if sas.is_done() || sas.is_cancelled() {
-                    let msg = "Can only confirm in-progress verifications!";
-                    let err = UIError::Failure(msg.into());
-
-                    return Err(err);
-                }
-
-                sas.confirm().await.map_err(IambError::from)?;
-
-                Ok(Some(InfoMessage::from("Confirmed verification")))
-            },
-            VerifyAction::Cancel => {
-                if sas.is_done() || sas.is_cancelled() {
-                    let msg = "Can only cancel in-progress verifications!";
-                    let err = UIError::Failure(msg.into());
-
-                    return Err(err);
-                }
-
-                sas.cancel().await.map_err(IambError::from)?;
-
-                Ok(Some(InfoMessage::from("Cancelled verification")))
-            },
-            VerifyAction::Mismatch => {
-                if sas.is_done() || sas.is_cancelled() {
-                    let msg = "Can only cancel in-progress verifications!";
-                    let err = UIError::Failure(msg.into());
-
-                    return Err(err);
-                }
-
-                sas.mismatch().await.map_err(IambError::from)?;
-
-                Ok(Some(InfoMessage::from("Cancelled verification")))
-            },
-        }
-    }
-
-    async fn verify_request(&self, user_id: OwnedUserId) -> IambResult<EditInfo> {
-        let enc = self.client.encryption();
-
-        match enc.get_user_identity(user_id.as_ref()).await.map_err(IambError::from)? {
-            Some(identity) => {
-                let methods = vec![VerificationMethod::SasV1];
-                let request = identity.request_verification_with_methods(methods);
-                let _req = request.await.map_err(IambError::from)?;
-                let info = format!("Sent verification request to {user_id}");
-
-                Ok(Some(InfoMessage::from(info)))
-            },
-            None => {
-                let msg = format!("Could not find identity information for {user_id}");
-                let err = UIError::Failure(msg);
-
-                Err(err)
-            },
         }
     }
 }

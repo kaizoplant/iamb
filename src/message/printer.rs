@@ -3,15 +3,9 @@
 //! The [TextPrinter] handles wrapping stylized text and inserting spaces for padding at the end of
 //! lines to make concatenation work right (e.g., combining table cells after wrapping their
 //! contents).
-use std::borrow::Cow;
 
-use ratatui::layout::Alignment;
-use ratatui::style::Style;
-use ratatui::text::{Line, Span, Text};
-use unicode_segmentation::UnicodeSegmentation;
-use unicode_width::UnicodeWidthStr;
-
-use crate::config::{ApplicationSettings, TunableValues};
+use crate::config::TunableValues;
+use crate::prelude::*;
 use crate::util::{
     replace_emojis_in_line,
     replace_emojis_in_span,
@@ -52,7 +46,7 @@ impl<'a> TextPrinter<'a> {
 
     /// The `(x, y)` position where the next text will be printed.
     pub fn cursor_pos(&self) -> (usize, usize) {
-        (self.curr_width, self.text.lines.len().saturating_sub(1))
+        (self.curr_width, self.text.lines.len())
     }
 
     /// Configure the alignment for each line.
@@ -295,6 +289,7 @@ impl<'a> TextPrinter<'a> {
 #[cfg(test)]
 pub mod tests {
     use super::*;
+
     use crate::tests::mock_settings;
 
     #[test]

@@ -1,105 +1,37 @@
 //! Window for Matrix rooms
-use std::borrow::Cow;
 use std::convert::TryInto;
 use std::ffi::{OsStr, OsString};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use edit::Builder;
 use edit::edit_with_builder as external_edit;
+use matrix_sdk::RoomState as MatrixRoomState;
+use matrix_sdk::attachment::AttachmentConfig;
 use matrix_sdk::attachment::{AttachmentInfo, BaseImageInfo};
+use matrix_sdk::media::{MediaFormat, MediaRequestParameters};
 use matrix_sdk::room::reply::{EnforceThread, Reply};
+use matrix_sdk::ruma::events::reaction::ReactionEventContent;
+use matrix_sdk::ruma::events::relation::{Annotation, Replacement};
+use matrix_sdk::ruma::events::room::message::{AddMentions, ForwardThread, ReplyWithinThread};
+use matrix_sdk::send_queue::RoomSendQueueError;
+use modalkit::editing::history::{self, HistoryList};
 use modalkit::editing::store::RegisterError;
-use std::process::Command;
-use tokio;
-use url::Url;
+use modalkit::keybindings::dialog::{Dialog, MultiChoice, MultiChoiceItem};
+use modalkit_ratatui::PromptActions;
+use modalkit_ratatui::textbox::{TextBox, TextBoxState};
+use ratatui::prelude::Stylize;
 
-use matrix_sdk::{
-    RoomState,
-    attachment::AttachmentConfig,
-    media::{MediaFormat, MediaRequestParameters},
-    room::Room as MatrixRoom,
-    ruma::{
-        OwnedEventId,
-        OwnedRoomId,
-        RoomId,
-        events::reaction::ReactionEventContent,
-        events::relation::{Annotation, Replacement},
-        events::room::message::{
-            AddMentions,
-            ForwardThread,
-            MessageType,
-            OriginalRoomMessageEvent,
-            Relation,
-            ReplyWithinThread,
-        },
-    },
-    send_queue::RoomSendQueueError,
-};
-
-use ratatui::{
-    buffer::Buffer,
-    layout::Rect,
-    text::{Line, Span},
-    widgets::{Paragraph, StatefulWidget, Widget},
-};
-
-use modalkit::keybindings::dialog::{Dialog, MultiChoice, MultiChoiceItem, PromptYesNo};
-
-use modalkit_ratatui::{
-    PromptActions,
-    TerminalCursor,
-    WindowOps,
-    textbox::{TextBox, TextBoxState},
-};
-
-use modalkit::actions::{
-    Action,
-    Editable,
-    EditorAction,
-    Jumpable,
-    PromptAction,
-    Promptable,
-    Scrollable,
-};
-use modalkit::editing::{
-    completion::CompletionList,
-    context::Resolve,
-    history::{self, HistoryList},
-    rope::EditRope,
-};
-use modalkit::errors::{EditError, EditResult, UIError};
-use modalkit::prelude::*;
-
-use crate::base::{
-    DownloadFlags,
-    EchoLocation,
-    IambAction,
-    IambBufferId,
-    IambError,
-    IambInfo,
-    IambResult,
-    MessageAction,
-    ProgramAction,
-    ProgramContext,
-    ProgramStore,
-    RoomFocus,
-    RoomInfo,
-    SendAction,
-};
-
-use crate::config::{ApplicationSettings, EncryptionIndicatorLocation};
+use crate::base::{DownloadFlags, EchoLocation};
+use crate::config::EncryptionIndicatorLocation;
 use crate::message::{
-    MessageEvent,
     MessageId,
-    MessageKey,
     TreeGenState,
     text_to_message,
     text_to_text_message_event_content,
 };
-use crate::worker::Requester;
-
-use super::scrollback::{Scrollback, ScrollbackState};
+use crate::prelude::*;
+use crate::windows::room::scrollback::{Scrollback, ScrollbackState};
 
 /// State needed for rendering [Chat].
 pub struct ChatState {
@@ -150,7 +82,7 @@ impl ChatState {
             return Err(IambError::NotJoined);
         };
 
-        if room.state() == RoomState::Joined {
+        if room.state() == MatrixRoomState::Joined {
             Ok(room)
         } else {
             Err(IambError::NotJoined)
@@ -402,7 +334,7 @@ impl ChatState {
                         return Err(err);
                     },
                     MessageEvent::State(ev) => ev.event_id().to_owned(),
-                    MessageEvent::Sticker(ev) => ev.event_id().to_owned(),
+                    MessageEvent::Sticker(ev, ..) => ev.event_id.to_owned(),
                     MessageEvent::Redacted(_, _) => {
                         let msg = "Cannot react to a redacted message";
                         let err = UIError::Failure(msg.into());
@@ -457,7 +389,7 @@ impl ChatState {
                         return Ok(None);
                     },
                     MessageEvent::State(ev) => ev.event_id().to_owned(),
-                    MessageEvent::Sticker(ev) => ev.event_id().to_owned(),
+                    MessageEvent::Sticker(ev, ..) => ev.event_id.to_owned(),
                     MessageEvent::Redacted(_, _) => {
                         let msg = "Cannot redact already redacted message";
                         let err = UIError::Failure(msg.into());
@@ -528,7 +460,7 @@ impl ChatState {
                         return Err(err);
                     },
                     MessageEvent::State(ev) => ev.event_id().to_owned(),
-                    MessageEvent::Sticker(ev) => ev.event_id().to_owned(),
+                    MessageEvent::Sticker(ev, ..) => ev.event_id.to_owned(),
                     MessageEvent::Redacted(_, _) => {
                         let msg = "Cannot unreact to a redacted message";
                         let err = UIError::Failure(msg.into());
@@ -639,6 +571,7 @@ impl ChatState {
                             .trim_end()
                             .to_string();
                     if edited_msg.is_empty() {
+                        self.tbox.reset();
                         return Ok(None);
                     }
                     edited_msg
@@ -985,6 +918,10 @@ impl TerminalCursor for ChatState {
     fn get_term_cursor(&self) -> Option<(u16, u16)> {
         delegate!(self, w => w.get_term_cursor())
     }
+
+    fn hide_term_cursor(&self) -> bool {
+        delegate!(self, w => w.hide_term_cursor())
+    }
 }
 
 impl Jumpable<ProgramContext, IambInfo> for ChatState {
@@ -1109,9 +1046,25 @@ impl StatefulWidget for Chat<'_> {
     type State = ChatState;
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
+        let settings = &self.store.application.settings;
+
         // Determine whether we have a description to show for the message bar.
         let desc_spans = match (&state.editing, &state.reply_to, state.thread()) {
-            (None, None, None) => None,
+            (None, None, None) => {
+                if state.room.is_tombstoned() {
+                    Some(
+                        Line::from(vec![
+                            Span::from("This room has been upgraded! ").bold(),
+                            Span::from("Use "),
+                            Span::from(":follow").bold(),
+                            Span::from(" to join everyone in the new room."),
+                        ])
+                        .centered(),
+                    )
+                } else {
+                    None
+                }
+            },
             (None, None, Some(_)) => Some(Line::from("Replying in thread")),
             (Some(_), None, None) => Some(Line::from("Editing message")),
             (Some(_), None, Some(_)) => Some(Line::from("Editing message in thread")),
@@ -1153,16 +1106,21 @@ impl StatefulWidget for Chat<'_> {
             Paragraph::new(desc_spans).render(descarea, buf);
         }
 
-        let encryption_settings = &self.store.application.settings.tunables.encryption;
+        let encryption_settings = &settings.tunables.encryption;
         let encryption_indicator = encryption_settings
             .get_indicator(EncryptionIndicatorLocation::PROMPT, state.room().encryption_state());
-        let prompt = match (self.focused, encryption_indicator) {
-            (false, _) => Span::raw("  "),
-            (true, Some(i)) => i,
-            (true, None) => Span::raw("> "),
+        let input_prompt = settings.tunables.input_prompt.as_deref();
+        let prompt = match (self.focused, encryption_indicator, input_prompt) {
+            (false, _, _) => Span::raw("  "),
+            (true, Some(i), _) => i,
+            (true, None, None) => Span::raw("> "),
+            (true, None, Some(s)) => Span::raw(s),
         };
 
         let tbox = TextBox::new().prompt(prompt);
+        state
+            .tbox
+            .set_ignorecase(self.store.application.settings.tunables.ignorecase);
         tbox.render(textarea, buf, &mut state.tbox);
 
         // Render the message scrollback.

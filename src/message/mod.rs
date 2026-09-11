@@ -1,75 +1,41 @@
 //! # Room Messages
-use std::borrow::Cow;
-use std::cmp::{Ord, Ordering, PartialOrd};
-use std::collections::BTreeMap;
+
+use std::cmp::{Ord, PartialOrd};
 use std::collections::hash_map::DefaultHasher;
-use std::convert::{TryFrom, TryInto};
-use std::fmt::{self, Display};
+use std::convert::TryInto;
 use std::hash::{Hash, Hasher};
-use std::ops::{Deref, DerefMut};
 
 use chrono::{DateTime, Local as LocalTz};
 use humansize::{DECIMAL, format_size};
 use matrix_sdk::ruma::OwnedTransactionId;
-use matrix_sdk::ruma::events::receipt::ReceiptThread;
-use matrix_sdk::ruma::events::room::MediaSource;
+use matrix_sdk::ruma::UInt;
+use matrix_sdk::ruma::events::RedactedUnsigned;
+use matrix_sdk::ruma::events::room::encrypted::{
+    OriginalRoomEncryptedEvent,
+    RedactedRoomEncryptedEvent,
+    RoomEncryptedEvent,
+};
 use matrix_sdk::ruma::events::room::message::RoomMessageEventContentWithoutRelation;
-use matrix_sdk::ruma::events::sticker::StickerEvent;
+use matrix_sdk::ruma::events::room::message::{
+    FormattedBody,
+    MessageFormat,
+    RedactedRoomMessageEvent,
+    RoomMessageEvent,
+};
+use matrix_sdk::ruma::events::room::redaction::SyncRoomRedactionEvent;
+use matrix_sdk::ruma::events::sticker::{OriginalStickerEvent, RedactedStickerEvent, StickerEvent};
 use matrix_sdk::ruma::events::{AnyRedactionEvent, MessageLikeEvent};
 use matrix_sdk::send_queue::SendHandle;
-use ratatui::style::Color;
-use unicode_width::UnicodeWidthStr;
-
-use matrix_sdk::ruma::{
-    EventId,
-    MilliSecondsSinceUnixEpoch,
-    OwnedEventId,
-    OwnedUserId,
-    UInt,
-    events::{
-        AnySyncStateEvent,
-        RedactedUnsigned,
-        relation::Thread,
-        room::{
-            encrypted::{
-                OriginalRoomEncryptedEvent,
-                RedactedRoomEncryptedEvent,
-                RoomEncryptedEvent,
-            },
-            message::{
-                FormattedBody,
-                MessageFormat,
-                MessageType,
-                OriginalRoomMessageEvent,
-                RedactedRoomMessageEvent,
-                Relation,
-                RoomMessageEvent,
-                RoomMessageEventContent,
-            },
-            redaction::SyncRoomRedactionEvent,
-        },
-    },
-};
-
-use ratatui::{
-    style::{Modifier as StyleModifier, Style},
-    symbols::line::THICK_VERTICAL,
-    text::{Line, Span, Text},
-};
-
 use modalkit::editing::cursor::Cursor;
-use modalkit::prelude::*;
-use ratatui_image::protocol::Protocol;
+use ratatui::symbols::line::THICK_VERTICAL;
+use ratatui_image::sliced::SlicedProtocol;
 
 use crate::base::MessageEdits;
-use crate::config::ImagePreviewSize;
-use crate::preview::{ImageStatus, PreviewKind, PreviewManager};
-use crate::{
-    base::RoomInfo,
-    config::ApplicationSettings,
-    message::html::{StyleTree, parse_matrix_html},
-    util::{replace_emojis_in_str, space, space_span, take_width_grapheme, wrapped_text},
-};
+use crate::message::html::{StyleTree, parse_matrix_html};
+use crate::message::state::{body_cow_state, html_state};
+use crate::prelude::*;
+use crate::preview::ImageStatus;
+use crate::util::{replace_emojis_in_str, space, space_span, take_width_grapheme, wrapped_text};
 
 mod compose;
 mod html;
@@ -77,10 +43,9 @@ mod printer;
 mod state;
 
 pub use self::compose::{text_to_message, text_to_text_message_event_content};
-use self::state::{body_cow_state, html_state};
-pub use html::TreeGenState;
+pub use self::html::TreeGenState;
 
-type ProtocolPreview<'a> = (&'a Protocol, u16, u16);
+type ProtocolPreview<'a> = (&'a SlicedProtocol, u16, u16);
 
 /// The key used for uniquely identifying messages within a room and its threads.
 ///
@@ -184,17 +149,17 @@ fn hash_message_id(id: &MessageId) -> Option<usize> {
 fn placeholder_frame(
     text: Option<&str>,
     outer_width: usize,
-    image_preview_size: &ImagePreviewSize,
+    image_preview_size: &Size,
 ) -> Option<String> {
-    let ImagePreviewSize { width, height } = image_preview_size;
-    let width = usize::min(*width, outer_width);
+    let Size { width, height } = image_preview_size;
+    let width = usize::min(*width as usize, outer_width);
     if width < 2 || *height < 2 {
         return None;
     }
     let mut placeholder = "\u{230c}".to_string();
     placeholder.push_str(&" ".repeat(width - 2));
     placeholder.push('\u{230d}');
-    placeholder.push_str(&"\n".repeat((height - 1) / 2));
+    placeholder.push_str(&"\n".repeat((*height as usize - 1) / 2));
 
     if *height > 2 &&
         let Some(text) = text &&
@@ -204,7 +169,7 @@ fn placeholder_frame(
         placeholder.push_str(text);
     }
 
-    placeholder.push_str(&"\n".repeat(height / 2));
+    placeholder.push_str(&"\n".repeat(*height as usize / 2));
     placeholder.push('\u{230e}');
     placeholder.push_str(&" ".repeat(width - 2));
     placeholder.push_str("\u{230f}\n");
@@ -258,17 +223,17 @@ impl MessageTimeStamp {
         dt1.date_naive() == dt2.date_naive()
     }
 
-    fn show_date(self) -> Option<Span<'static>> {
+    fn show_date(self) -> Span<'static> {
         let time = self.as_datetime().format("%A, %B %d %Y").to_string();
 
-        Span::styled(time, BOLD_STYLE).into()
+        Span::styled(time, BOLD_STYLE)
     }
 
-    fn show_time(self) -> Option<Span<'static>> {
+    fn show_time(self) -> Span<'static> {
         let time = self.as_datetime().format("%T");
         let time = format!("  [{time}]");
 
-        Span::raw(time).into()
+        Span::raw(time)
     }
 }
 
@@ -441,7 +406,7 @@ pub enum MessageEvent {
     Original(Box<OriginalRoomMessageEvent>, MessageEdits),
     Redacted(OwnedEventId, Option<String>),
     State(Box<AnySyncStateEvent>),
-    Sticker(Box<StickerEvent>),
+    Sticker(Box<OriginalStickerEvent>, MediaSource),
     Local(OwnedTransactionId, SendHandle, Box<RoomMessageEventContent>),
 }
 
@@ -454,7 +419,7 @@ impl MessageEvent {
             MessageEvent::Redacted(event_id, _) => event_id.as_ref(),
             MessageEvent::State(ev) => ev.event_id(),
             MessageEvent::Local(..) => return None,
-            MessageEvent::Sticker(ev) => ev.event_id(),
+            MessageEvent::Sticker(ev, ..) => ev.event_id.as_ref(),
         };
 
         Some(event_id)
@@ -472,7 +437,7 @@ impl MessageEvent {
             MessageEvent::EncryptedRedacted(_) => None,
             MessageEvent::Redacted(_, _) => None,
             MessageEvent::State(_) => None,
-            MessageEvent::Sticker(_) => None,
+            MessageEvent::Sticker(..) => None,
             MessageEvent::Local(_, _, content) => Some(&content.msgtype),
         }
     }
@@ -491,7 +456,7 @@ impl MessageEvent {
                 body_cow_reason(redaction_reason_unsigned(&ev.unsigned).as_deref())
             },
             MessageEvent::Redacted(_, reason) => body_cow_reason(reason.as_deref()),
-            MessageEvent::Sticker(ev) => body_cow_sticker(ev),
+            MessageEvent::Sticker(ev, ..) => body_cow_sticker(ev),
             MessageEvent::State(ev) => body_cow_state(ev),
             MessageEvent::Local(_, _, content) => body_cow_content(&content.msgtype),
         }
@@ -515,8 +480,8 @@ impl MessageEvent {
             MessageEvent::EncryptedRedacted(_) => return,
             MessageEvent::Redacted(_, _) => return,
             MessageEvent::State(_) => return,
-            MessageEvent::Sticker(ev) => {
-                let event_id = ev.event_id().to_owned();
+            MessageEvent::Sticker(ev, ..) => {
+                let event_id = ev.event_id.to_owned();
                 let reason = redaction_reason_event(redaction);
                 *self = MessageEvent::Redacted(event_id, reason);
             },
@@ -617,13 +582,8 @@ fn body_cow_content(msgtype: &MessageType) -> Cow<'_, str> {
     Cow::Borrowed(s)
 }
 
-fn body_cow_sticker(content: &StickerEvent) -> Cow<'_, str> {
-    match content {
-        MessageLikeEvent::Original(sticker) => {
-            Cow::Owned(format!("* sent a sticker: {}", sticker.content.body))
-        },
-        MessageLikeEvent::Redacted(_) => Cow::Borrowed("[Redacted]"),
-    }
+fn body_cow_sticker(sticker: &OriginalStickerEvent) -> Cow<'_, str> {
+    Cow::Owned(format!("* sent a sticker: {}", sticker.content.body))
 }
 
 fn redaction_reason_unsigned(unsigned: &RedactedUnsigned) -> Option<String> {
@@ -661,7 +621,7 @@ enum MessageColumns {
 impl MessageColumns {
     fn user_gutter_width(&self, settings: &ApplicationSettings) -> u16 {
         if let MessageColumns::One = self {
-            0
+            2
         } else {
             settings.tunables.user_gutter_width as u16
         }
@@ -958,7 +918,6 @@ pub struct Message {
     pub timestamp: MessageTimeStamp,
     pub downloaded: bool,
     pub html: Option<StyleTree>,
-    pub image_preview: Option<MediaSource>,
 }
 
 impl Message {
@@ -966,14 +925,7 @@ impl Message {
         let html = event.html();
         let downloaded = false;
 
-        Message {
-            event,
-            sender,
-            timestamp,
-            downloaded,
-            html,
-            image_preview: None,
-        }
+        Message { event, sender, timestamp, downloaded, html }
     }
 
     pub fn reply_to(&self) -> Option<OwnedEventId> {
@@ -984,7 +936,17 @@ impl Message {
             MessageEvent::Original(ev, _) => &ev.content,
             MessageEvent::Redacted(_, _) => return None,
             MessageEvent::State(_) => return None,
-            MessageEvent::Sticker(_) => return None,
+            MessageEvent::Sticker(ev, ..) => {
+                return match &ev.content.relates_to {
+                    Some(Relation::Reply(reply)) => Some(reply.in_reply_to.event_id.clone()),
+                    Some(Relation::Thread(Thread {
+                        in_reply_to: Some(in_reply_to),
+                        is_falling_back: false,
+                        ..
+                    })) => Some(in_reply_to.event_id.clone()),
+                    Some(_) | None => None,
+                };
+            },
         };
 
         match &content.relates_to {
@@ -1006,7 +968,7 @@ impl Message {
             MessageEvent::Original(ev, _) => &ev.content,
             MessageEvent::Redacted(_, _) => return None,
             MessageEvent::State(_) => return None,
-            MessageEvent::Sticker(_) => return None,
+            MessageEvent::Sticker(..) => return None,
         };
 
         match &content.relates_to {
@@ -1017,6 +979,18 @@ impl Message {
                 ..
             })) if event_id == &in_reply_to.event_id => Some(event_id.clone()),
             Some(_) | None => None,
+        }
+    }
+
+    pub fn image_preview(&self) -> Option<&MediaSource> {
+        if let Some(MessageType::Image(c)) = self.event.msgtype() {
+            return Some(&c.source);
+        }
+
+        match &self.event {
+            MessageEvent::Sticker(_, source) => Some(source),
+
+            _ => None,
         }
     }
 
@@ -1039,6 +1013,31 @@ impl Message {
         return style;
     }
 
+    pub fn show_date(&self, prev: Option<&Message>) -> bool {
+        let Some(prev) = prev else { return true };
+
+        !prev.timestamp.same_day(self.timestamp)
+    }
+    pub fn message_column_width(
+        viewctx: &ViewportContext<MessageCursor>,
+        settings: &ApplicationSettings,
+    ) -> usize {
+        let width = viewctx.get_width();
+        let user_gutter = settings.tunables.user_gutter_width;
+
+        if user_gutter + TIME_GUTTER + READ_GUTTER + MIN_MSG_LEN <= width &&
+            settings.tunables.read_receipt_display
+        {
+            width - user_gutter - TIME_GUTTER - READ_GUTTER
+        } else if user_gutter + TIME_GUTTER + MIN_MSG_LEN <= width {
+            width - user_gutter - TIME_GUTTER
+        } else if user_gutter + MIN_MSG_LEN <= width {
+            width - user_gutter
+        } else {
+            width.saturating_sub(2)
+        }
+    }
+
     fn get_render_format<'a>(
         &'a self,
         prev: Option<&Message>,
@@ -1047,10 +1046,7 @@ impl Message {
         settings: &'a ApplicationSettings,
     ) -> MessageFormatter<'a> {
         let orig = width;
-        let date = match &prev {
-            Some(prev) if prev.timestamp.same_day(self.timestamp) => None,
-            _ => self.timestamp.show_date(),
-        };
+        let date = self.show_date(prev).then(|| self.timestamp.show_date());
         let user_gutter = settings.tunables.user_gutter_width;
 
         if user_gutter + TIME_GUTTER + READ_GUTTER + MIN_MSG_LEN <= width &&
@@ -1059,7 +1055,7 @@ impl Message {
             let cols = MessageColumns::Four;
             let fill = width - user_gutter - TIME_GUTTER - READ_GUTTER;
             let user = self.show_sender(prev, true, info, settings, width);
-            let time = self.timestamp.show_time();
+            let time = Some(self.timestamp.show_time());
             let read = info
                 .event_receipts
                 .values()
@@ -1073,7 +1069,7 @@ impl Message {
             let cols = MessageColumns::Three;
             let fill = width - user_gutter - TIME_GUTTER;
             let user = self.show_sender(prev, true, info, settings, width);
-            let time = self.timestamp.show_time();
+            let time = Some(self.timestamp.show_time());
             let read = Vec::new();
 
             MessageFormatter { settings, cols, orig, fill, user, date, time, read }
@@ -1164,7 +1160,7 @@ impl Message {
             fmt.push_spans(
                 Line::from(vec![
                     Span::styled("(edited)", style.fg(Color::Gray)),
-                    space_span(fmt.width() - 8, style),
+                    space_span(fmt.width().saturating_sub(8), style),
                 ]),
                 style,
                 &mut text,
@@ -1203,11 +1199,10 @@ impl Message {
         style: Style,
         settings: &'a ApplicationSettings,
         previews: &'a PreviewManager,
-    ) -> (Text<'a>, Option<&'a Protocol>) {
+    ) -> (Text<'a>, Option<&'a SlicedProtocol>) {
         let mut proto = None;
         let placeholder = match self
-            .image_preview
-            .as_ref()
+            .image_preview()
             .and_then(|source| previews.get(source, PreviewKind::Message))
         {
             None => None,
@@ -1219,7 +1214,7 @@ impl Message {
             },
             Some(ImageStatus::Loaded(backend)) => {
                 proto = Some(backend);
-                placeholder_frame(Some("No Space..."), width, &backend.area().into())
+                placeholder_frame(None, width, &backend.size())
             },
             Some(ImageStatus::Error(err)) => Some(format!("[Image error: {err}]\n")),
         };
@@ -1235,17 +1230,17 @@ impl Message {
                 filename.push_str(" \u{2705}");
             }
 
-            text = text + wrapped_text(filename, width, style);
+            text += wrapped_text(filename, width, style);
         }
 
         if let Some(html) = &self.html {
-            text = text + html.to_text(width, style, settings);
+            text += html.to_text(width, style, settings);
         } else {
             let mut msg = self.event.body();
             if settings.tunables.message_shortcode_display {
                 msg = Cow::Owned(replace_emojis_in_str(msg.as_ref()));
             }
-            text = text + wrapped_text(msg, width, style);
+            text += wrapped_text(msg, width, style);
         };
 
         (text, proto)
@@ -1300,7 +1295,6 @@ impl Message {
         self.event.redact(redaction);
         self.html = None;
         self.downloaded = false;
-        self.image_preview = None;
     }
 
     pub fn set_edits(&mut self, new_edits: MessageEdits) {
@@ -1403,13 +1397,36 @@ impl From<AnySyncStateEvent> for Message {
     }
 }
 
+impl From<OriginalStickerEvent> for Message {
+    fn from(event: OriginalStickerEvent) -> Self {
+        let timestamp = event.origin_server_ts.into();
+        let user_id = event.sender.clone();
+        let source = event.content.source.clone().into();
+        let content = MessageEvent::Sticker(event.into(), source);
+
+        Message::new(content, user_id, timestamp)
+    }
+}
+
+impl From<RedactedStickerEvent> for Message {
+    fn from(event: RedactedStickerEvent) -> Self {
+        let timestamp = event.origin_server_ts.into();
+        let user_id = event.sender.clone();
+
+        let event_id = event.event_id;
+        let reason = redaction_reason_unsigned(&event.unsigned);
+        let content = MessageEvent::Redacted(event_id, reason);
+
+        Message::new(content, user_id, timestamp)
+    }
+}
+
 impl From<StickerEvent> for Message {
     fn from(event: StickerEvent) -> Self {
-        let timestamp = event.origin_server_ts().into();
-        let user_id = event.sender().to_owned();
-        let event = MessageEvent::Sticker(event.into());
-
-        Message::new(event, user_id, timestamp)
+        match event {
+            MessageLikeEvent::Original(ev) => ev.into(),
+            MessageLikeEvent::Redacted(ev) => ev.into(),
+        }
     }
 }
 
@@ -1421,20 +1438,19 @@ impl Display for Message {
 
 #[cfg(test)]
 pub mod tests {
-    use matrix_sdk::ruma::events::room::{
-        ImageInfo,
-        message::{
-            AudioInfo,
-            AudioMessageEventContent,
-            FileInfo,
-            FileMessageEventContent,
-            ImageMessageEventContent,
-            VideoInfo,
-            VideoMessageEventContent,
-        },
+    use super::*;
+
+    use matrix_sdk::ruma::events::room::ImageInfo;
+    use matrix_sdk::ruma::events::room::message::{
+        AudioInfo,
+        AudioMessageEventContent,
+        FileInfo,
+        FileMessageEventContent,
+        ImageMessageEventContent,
+        VideoInfo,
+        VideoMessageEventContent,
     };
 
-    use super::*;
     use crate::tests::*;
 
     #[test]
@@ -1549,7 +1565,7 @@ pub mod tests {
         }
 
         assert_eq!(
-            placeholder_frame(None, 4, &ImagePreviewSize { width: 4, height: 4 }),
+            placeholder_frame(None, 4, &Size { width: 4, height: 4 }),
             pretty_frame_test(
                 r#"
 ⌌  ⌍
@@ -1561,7 +1577,7 @@ pub mod tests {
         );
 
         assert_eq!(
-            placeholder_frame(None, 2, &ImagePreviewSize { width: 4, height: 4 }),
+            placeholder_frame(None, 2, &Size { width: 4, height: 4 }),
             pretty_frame_test(
                 r#"
 ⌌⌍
@@ -1571,12 +1587,12 @@ pub mod tests {
 "#
             )
         );
-        assert_eq!(placeholder_frame(None, 4, &ImagePreviewSize { width: 1, height: 4 }), None);
+        assert_eq!(placeholder_frame(None, 4, &Size { width: 1, height: 4 }), None);
 
-        assert_eq!(placeholder_frame(None, 4, &ImagePreviewSize { width: 4, height: 1 }), None);
+        assert_eq!(placeholder_frame(None, 4, &Size { width: 4, height: 1 }), None);
 
         assert_eq!(
-            placeholder_frame(Some("OK"), 4, &ImagePreviewSize { width: 4, height: 4 }),
+            placeholder_frame(Some("OK"), 4, &Size { width: 4, height: 4 }),
             pretty_frame_test(
                 r#"
 ⌌  ⌍
@@ -1587,7 +1603,7 @@ pub mod tests {
             )
         );
         assert_eq!(
-            placeholder_frame(Some("OK"), 6, &ImagePreviewSize { width: 6, height: 6 }),
+            placeholder_frame(Some("OK"), 6, &Size { width: 6, height: 6 }),
             pretty_frame_test(
                 r#"
 ⌌    ⌍
@@ -1600,7 +1616,7 @@ pub mod tests {
             )
         );
         assert_eq!(
-            placeholder_frame(Some("OK"), 6, &ImagePreviewSize { width: 6, height: 7 }),
+            placeholder_frame(Some("OK"), 6, &Size { width: 6, height: 7 }),
             pretty_frame_test(
                 r#"
 ⌌    ⌍
@@ -1614,7 +1630,7 @@ pub mod tests {
             )
         );
         assert_eq!(
-            placeholder_frame(Some("idontfit"), 4, &ImagePreviewSize { width: 4, height: 4 }),
+            placeholder_frame(Some("idontfit"), 4, &Size { width: 4, height: 4 }),
             pretty_frame_test(
                 r#"
 ⌌  ⌍
@@ -1625,7 +1641,7 @@ pub mod tests {
             )
         );
         assert_eq!(
-            placeholder_frame(Some("OK"), 4, &ImagePreviewSize { width: 4, height: 2 }),
+            placeholder_frame(Some("OK"), 4, &Size { width: 4, height: 2 }),
             pretty_frame_test(
                 r#"
 ⌌  ⌍
@@ -1634,7 +1650,7 @@ pub mod tests {
             )
         );
         assert_eq!(
-            placeholder_frame(Some("OK"), 4, &ImagePreviewSize { width: 2, height: 3 }),
+            placeholder_frame(Some("OK"), 4, &Size { width: 2, height: 3 }),
             pretty_frame_test(
                 r#"
 ⌌⌍
